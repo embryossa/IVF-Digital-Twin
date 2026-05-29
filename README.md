@@ -3,8 +3,15 @@
 **An Integrated Multi-Source Ensemble Platform for Stage-Stratified IVF Outcome Prediction**
 
 > Stochastic Simulation · Neural Network Ensembling · Bayesian Evidence Synthesis · Unsupervised Phenotype Classification · Diffusion-Based Generative Module · Graph Attention Network
+> 
+[![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/Status-Research%20Prototype-orange.svg)]()
+[![Platform](https://img.shields.io/badge/Platform-Windows-0078D4.svg)]()
+[![Layers](https://img.shields.io/badge/Pipeline%20Layers-6-purple.svg)]()
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Sergei%20Sergeev-0A66C2.svg?logo=linkedin)](https://www.linkedin.com/in/serdj-sergeev-8b5893298/)
 
-*Sergeev et al., 2025 · embryossa@gmail.com*  
+*Sergeev et al., 2026 · embryossa@gmail.com*  
 *Research prototype — not for standalone clinical use*
 
 ---
@@ -478,7 +485,7 @@ If you use this software in research, please cite:
   author    = {Sergeev, Sergei},
   title     = {IVF Digital Twin v6.2: An Integrated Multi-Source Ensemble 
                Platform for Stage-Stratified IVF Outcome Prediction},
-  year      = {2025},
+  year      = {2026},
   url       = {https://github.com/embryossa/IVF-Digital-Twin},
   note      = {Research prototype}
 }
@@ -488,6 +495,8 @@ If you use this software in research, please cite:
 
 ## Contact
 
-**Sergei Sergeev** · embryossa@gmail.com
+**Sergei Sergeev**  
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Profile-0A66C2.svg?logo=linkedin)](https://www.linkedin.com/in/serdj-sergeev-8b5893298/)
+· embryossa@gmail.com
 
 For research collaboration, model weight access, clinic deployment licensing, or external validation partnerships.
