@@ -1,0 +1,39 @@
+# IVF Digital Twin v6.2 — Зависимости
+# Установка: pip install -r requirements.txt
+
+# Core
+numpy>=1.24.0
+scipy>=1.10.0
+pandas>=2.0.0
+plotly>=5.14.0
+streamlit>=1.32.0
+matplotlib>=3.8.0
+kaleido>=0.2.1
+
+# Криптография (лицензирование + шифрование моделей)
+cryptography>=41.0.0
+
+# ML
+lightgbm
+joblib>=1.2.0,<2.0.0
+scikit-learn==1.5.0
+
+# NN (torch устанавливается отдельно через INSTALL.bat — шаг 5)
+mambular==0.2.2
+crepes==0.8.0
+cloudpickle==1.5.0
+model-unpickler
+
+# PDF export
+reportlab>=4.0.0
+
+# ── Graph Neural Network (GNN / GAT Ансамбль) ────────────────────────────────
+# torch-geometric и его зависимости (torch-scatter, torch-sparse и др.)
+# НЕ устанавливаются через pip install -r requirements.txt напрямую —
+# они требуют wheels, собранных строго под версию PyTorch.
+# INSTALL.bat (шаг 8) устанавливает их автоматически с:
+#   https://data.pyg.org/whl/torch-2.5.1+cpu.html
+# Для ручной установки:
+#   pip install torch-scatter torch-sparse torch-cluster torch-spline-conv \
+#     -f https://data.pyg.org/whl/torch-2.5.1+cpu.html
+#   pip install torch-geometric
