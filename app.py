@@ -1,5 +1,5 @@
 """
-IVF Digital Twin v6.2 — Streamlit Clinical Application
+IVF Digital Twin v7.0 — Streamlit Clinical Application
 Запуск: streamlit run app.py
 
 Офлайн-лицензирование (RSA + AES-256):
@@ -7,7 +7,7 @@ IVF Digital Twin v6.2 — Streamlit Clinical Application
   Выдача ключей — через generate_license.py (только у разработчика).
 """
 
-import sys, os, warnings, math, csv, uuid as _uuid
+import sys, os, warnings, math, csv, uuid as _uuid, json
 from datetime import datetime, date
 from pathlib import Path as _Path
 warnings.filterwarnings("ignore")
@@ -17,6 +17,14 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 from scipy.stats import beta as beta_dist, norm, ks_2samp
+
+# ── BEFE (L7) — Bayesian Evidence Fusion Engine ──────────────
+try:
+    from befe import BEFE as _BEFE
+    from befe_app import build_befe_result, render_befe_tab
+    _BEFE_OK, _BEFE_ERR = True, ""
+except Exception as _befe_e:
+    _BEFE_OK, _BEFE_ERR = False, str(_befe_e)
 
 # ══════════════════════════════════════════════════════════════
 #  ЕДИНЫЙ СТИЛЬ ГРАФИКОВ (применяется во всех вкладках и PDF)
@@ -61,6 +69,45 @@ def _apply_gnn_style(fig):
             zeroline=False,
             tickfont=dict(size=11),
         )
+        # ── 2× зум + центрирование пациентки в области точек графа ──────
+        # Сдвигаем все scatter-трейсы левой панели так, чтобы звезда пациентки
+        # оказалась в (0,0), затем берём фиксированное окно вокруг центра.
+        # Часть точек уходит за пределы — это допустимо.
+        try:
+            import numpy as _np
+            def _xax(tr):
+                return getattr(tr, "xaxis", None) or "x"
+            # 1) находим координаты пациентки (звезда / name='Пациентка')
+            pat_x = pat_y = None
+            for tr in fig.data:
+                if getattr(tr, "type", "") != "scatter" or _xax(tr) != "x":
+                    continue
+                nm = (getattr(tr, "name", "") or "")
+                sym = getattr(getattr(tr, "marker", None), "symbol", None)
+                if "Пациент" in nm or sym == "star":
+                    xs, ys = tr.x, tr.y
+                    if xs is not None and ys is not None and len(xs) and len(ys):
+                        pat_x, pat_y = float(xs[0]), float(ys[0])
+                        break
+            # 2) сдвигаем все scatter левой панели на (-pat_x, -pat_y)
+            if pat_x is not None:
+                for tr in fig.data:
+                    if getattr(tr, "type", "") == "scatter" and _xax(tr) == "x":
+                        if tr.x is not None:
+                            tr.x = tuple(float(v) - pat_x for v in tr.x)
+                        if tr.y is not None:
+                            tr.y = tuple(float(v) - pat_y for v in tr.y)
+            # 3) фиксированное окно вокруг центра (зум ~1.5×)
+            fig.update_xaxes(range=[-0.87, 0.87], row=1, col=1)
+            fig.update_yaxes(range=[-0.87, 0.87], row=1, col=1,
+                             scaleanchor="x", scaleratio=1)
+        except Exception:
+            try:
+                fig.update_xaxes(range=[-0.87, 0.87], row=1, col=1)
+                fig.update_yaxes(range=[-0.87, 0.87], row=1, col=1,
+                                 scaleanchor="x", scaleratio=1)
+            except Exception:
+                pass
         fig.update_yaxes(
             gridcolor="rgba(200,210,220,0.35)",
             zeroline=False,
@@ -178,7 +225,7 @@ def _render_license_gate():
         if os.path.exists(logo_path):
             st.image(logo_path, width=90)
 
-        st.markdown("## 🧬 IVF Digital Twin v6.2")
+        st.markdown("## 🧬 IVF Digital Twin v7.0")
         st.markdown("### Активация лицензии")
         st.markdown("---")
 
@@ -214,7 +261,7 @@ def _render_license_gate():
 
         st.markdown("---")
         st.caption(
-            "IVF Digital Twin · Sergeev et al., 2025 · embryossa@gmail.com · Research prototype"
+            "IVF Digital Twin · from in vitro to in silico · embryossa@gmail.com · Research prototype"
         )
 
 
@@ -635,8 +682,8 @@ def _get_gnn_bundle():
 
 _gnn_bundle = _get_gnn_bundle()
 st.sidebar.image(os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo22.png"), width=80)
-st.sidebar.title("IVF Digital Twin v6.2")
-st.sidebar.caption("Sergeev et al., 2025")
+st.sidebar.title("IVF Digital Twin v7.0")
+st.sidebar.caption("from in vitro to in silico")
 st.sidebar.markdown("---")
 
 st.sidebar.header("👩 Параметры пациентки")
@@ -692,25 +739,59 @@ known = KnownValues(
 
 st.sidebar.markdown("---")
 st.sidebar.header("🏥 Данные клиники (prior)")
-use_clinic = st.sidebar.checkbox("Использовать данные клиники", value=True)
-if use_clinic:
-    clinic_raw = st.sidebar.text_area(
-        "Успехи / Переносы (по строке: 19/43)",
-        value="19/43\n18/45\n20/65\n6/18\n13/26\n12/31\n19/47\n22/49\n25/58",
-        height=160,
-    )
+
+# Конфиг клиники: success/transfer батчи берутся из clinic_config.json, который
+# редактируется под каждую клинику. Файл — единственный источник данных, чтобы
+# исключить ручную правку врачами в интерфейсе.
+_clinic_cfg_path = os.path.join(_BASE_DIR, "clinic_config.json")
+_clinic_cfg = None
+if os.path.exists(_clinic_cfg_path):
     try:
-        lines = [l.strip() for l in clinic_raw.strip().splitlines() if "/" in l]
-        clinic_s = [int(l.split("/")[0]) for l in lines]
-        clinic_t = [int(l.split("/")[1]) for l in lines]
-        obs_rate = sum(clinic_s) / sum(clinic_t)
-        st.sidebar.success(f"✓ {len(clinic_s)} батчей, факт. частота: "
-                           f"{obs_rate*100:.1f}%")
-    except:
-        clinic_s, clinic_t = None, None
-        st.sidebar.error("Неверный формат")
+        with open(_clinic_cfg_path, "r", encoding="utf-8") as _cf:
+            _clinic_cfg = json.load(_cf)
+    except Exception as _cfg_e:
+        st.sidebar.error(f"Ошибка чтения clinic_config.json: {_cfg_e}")
+
+clinic_s, clinic_t = None, None
+if _clinic_cfg is not None:
+    _cfg_clinic_name = (_clinic_cfg.get("clinic_name") or "").strip()
+    if _cfg_clinic_name:
+        st.session_state["ivf_clinic_name"] = _cfg_clinic_name
+    _cfg_default_on = bool(_clinic_cfg.get("use_clinic_data", True))
+    use_clinic = st.sidebar.checkbox(
+        "Использовать данные клиники", value=_cfg_default_on,
+        help="Источник — clinic_config.json. Отредактируйте файл, чтобы изменить.")
+    if use_clinic:
+        try:
+            # Пересчитываем КАЖДЫЙ раз из конфига — частота не «залипает».
+            _batches = _clinic_cfg.get("batches", []) or []
+            clinic_s = [int(b[0]) for b in _batches]
+            clinic_t = [int(b[1]) for b in _batches]
+            if clinic_s and clinic_t and sum(clinic_t) > 0:
+                obs_rate = sum(clinic_s) / sum(clinic_t)
+                _name_txt = f" · {_cfg_clinic_name}" if _cfg_clinic_name else ""
+                st.sidebar.success(
+                    f"✓ Данные клиники активны{_name_txt}: "
+                    f"{len(clinic_s)} батчей, факт. частота "
+                    f"{obs_rate*100:.1f}% ({sum(clinic_s)}/{sum(clinic_t)})")
+            else:
+                clinic_s, clinic_t = None, None
+                st.sidebar.warning("clinic_config.json: пустой список batches")
+        except Exception as _b_e:
+            clinic_s, clinic_t = None, None
+            st.sidebar.error(f"clinic_config.json: неверный формат batches ({_b_e})")
+    with st.sidebar.expander("Показать батчи клиники"):
+        st.caption("Редактируется только в файле clinic_config.json")
+        if clinic_s and clinic_t:
+            st.dataframe(
+                {"Успехи": clinic_s, "Переносы": clinic_t},
+                use_container_width=True, hide_index=True)
+        else:
+            st.caption("—")
 else:
-    clinic_s, clinic_t = None, None
+    st.sidebar.info("clinic_config.json не найден — данные клиники не используются "
+                    "(prior строится без них). Добавьте файл рядом с app.py.")
+    use_clinic = False
 
 n_sim = st.sidebar.select_slider(
     "Итераций MC", options=[500, 1000, 2000, 5000], value=2000)
@@ -852,7 +933,7 @@ st.markdown("""
 ⚠️ <b>Только для поддержки клинического решения.</b> Все прогнозы являются
 вероятностными оценками на основе опубликованных моделей. Окончательное
 решение принимает врач-репродуктолог.
-<br><i>IVF Digital Twin v6.2 · Sergeev et al., 2025</i>
+<br>IVF Digital Twin v7.0 · <i>from in vitro to in silico</i>
 </div>
 """, unsafe_allow_html=True)
 
@@ -866,22 +947,27 @@ if not run_btn:
 
         with st.expander("ℹ️ О системе"):
             st.markdown("""
-        **IVF Digital Twin v6.2** — интегрированная система прогнозирования
-        исходов ЭКО, объединяющая 6 независимых слоёв оценки.
+        **IVF Digital Twin v7.0** — интегрированная система прогнозирования
+        исходов ЭКО, объединяющая 7 независимых слоёв оценки.
 
-        *Sergeev et al., 2025. Personal research project.*
+        *from in vitro to in silico.*
 
         | Слой | Метод |
         |---|---|
         | L1 Стохастический pipeline | ZINB + биномиальные фильтры (S1–S6b) |
         | L2 Ансамбль на перенос | FORTUNE + KPIScore (логит-взвешивание) |
         | L3 Нейросеть | KAN + FT-Transformer + Venn-Abers (KAT) |
-        | L4 Кластер | Ближайший центроид 18D (Sergeev et al.) |
+        | L4 Кластер | Ближайший центроид 18D |
         | L5 Лабораторный прогноз | CSDI-Transformer + LightGBM + Conformal PI |
         | L6 Граф пациентов | Graph Attention Transformer (GAT) + ансамбль с KAT |
+        | **L7 BEFE** | **Bayesian Evidence Fusion: Prior → Evidence → Posterior** |
 
-        **Байесовский posterior** с пациент-зависимым prior (Beta-регрессия).
-        **Трёхуровневая декомпозиция** вероятности беременности.
+        **L7 (BEFE)** объединяет все уровни в единый posterior с доверительным
+        интервалом: механистический приор (L1) обновляется независимым
+        нейросетевым доказательством (L3 + L6), верифицированным диффузионной
+        моделью (L5), с двойным OOD-детектором (клинический + эмбриологический).
+        Итоговая вероятность — единственная цифра, которую видит врач, с явной
+        оценкой надёжности.
         """)
         st.stop()
     else:
@@ -1044,8 +1130,7 @@ dom  = ca['dominant_cluster']
 
 # ── Ключевые метрики ──────────────────────────────────────────
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("На перенос", f"{res['p_per_transfer']*100:.1f}%",
-          help="Вероятность беременности при одном переносе")
+# c1 (итоговая вероятность) заполняется ниже, после расчёта BEFE
 c2.metric("Если цикл viable", f"{res['p_cum_if_viable']*100:.1f}%",
           help="Кумулятивная при ≥1 эмбрионе для переноса")
 c3.metric("Успех цикла", f"{res['p_overall_cycle']*100:.1f}%",
@@ -1100,6 +1185,52 @@ st.session_state['_pdf_p_gnn_ens'] = _p_gnn_ens
 st.session_state['_pdf_p_gnn_raw'] = _p_gnn_raw
 st.session_state['_pdf_w_gnn']     = _w_gnn
 
+# ── L7 BEFE — считаем здесь, чтобы posterior был главной цифрой Результатов ──
+_befe_res, _befe_map = (None, {})
+if _BEFE_OK:
+    # Автозагрузка OOD-статистик (создаются fit_befe_ood.py). Пока файла нет —
+    # детектор просто выключен, без ошибок.
+    if "_befe_ood_stats" not in st.session_state:
+        _ood_npz = os.path.join(_BASE_DIR, "models", "befe_ood_stats.npz")
+        if os.path.exists(_ood_npz):
+            try:
+                _z = np.load(_ood_npz, allow_pickle=True)
+                st.session_state["_befe_ood_stats"] = {
+                    "clinical_mu":      _z["clinical_mu"],
+                    "clinical_cov_inv": _z["clinical_cov_inv"],
+                    "embryo_mu":        _z["embryo_mu"],
+                    "embryo_cov_inv":   _z["embryo_cov_inv"],
+                }
+            except Exception:
+                pass
+    try:
+        _befe_res, _befe_map = build_befe_result(
+            res,
+            p_kat_raw   = _p_kat_raw,
+            ci_kat      = _ci_kat,
+            p_gnn_raw   = _p_gnn_raw,
+            gnn_result  = _gnn_result,
+            w_gnn       = _w_gnn,
+            csdi_result = st.session_state.get("csdi_result"),
+            age=float(age), amh=float(amh), afc=int(afc), bmi=float(bmi),
+            ood_stats   = st.session_state.get("_befe_ood_stats"),
+        )
+    except Exception:
+        _befe_res, _befe_map = None, {}
+st.session_state['_pdf_befe'] = _befe_res
+
+# ── Заполняем c1 — итоговая вероятность (BEFE posterior как главная цифра) ──
+if _befe_res is not None:
+    c1.metric("P(беременность) · BEFE",
+              f"{_befe_res.posterior*100:.1f}%",
+              help=(f"Итоговая вероятность L7 (Bayesian Evidence Fusion). "
+                    f"95% ДИ: {_befe_res.ci_low*100:.1f}–{_befe_res.ci_high*100:.1f}%. "
+                    f"Надёжность: {_befe_res.reliability}/100. "
+                    f"На один перенос (L1–L2): {res['p_per_transfer']*100:.1f}%"))
+else:
+    c1.metric("На перенос", f"{res['p_per_transfer']*100:.1f}%",
+              help="Вероятность беременности при одном переносе (L1–L2)")
+
 if _p_kat_raw is not None:
     c4.metric("KAT (ансамбль NN)",
               f"{_p_kat_raw*100:.1f}%",
@@ -1132,12 +1263,12 @@ if p_cancel > 0.05:
                f"**{p_cancel*100:.1f}%**")
 
 # ── Вкладки ───────────────────────────────────────────────────
-tabs = st.tabs(["🔬 Pipeline", "📈 Беременность", "🧠 Кластер",
-                "📉 Байес + попытки", "⚠️ Риски", "🏦 Банкинг",
-                "🧬 Diffusion", "🕸️ GAT Graph"])
+tab_pipeline, tab_preg, tab_risk, tab_bank, tab_cluster, tab_diff, tab_gat, tab_befe = st.tabs(
+    ["🔬 Pipeline", "📈 Беременность", "⚠️ Риски", "🏦 Банкинг",
+     "🧠 Кластер", "🧬 Diffusion", "🕸️ GAT Graph", "⚖️ BEFE"])
 
-# ── TAB 1: Pipeline ───────────────────────────────────────────
-with tabs[0]:
+# ── TAB: Pipeline ─────────────────────────────────────────────
+with tab_pipeline:
     col_f, col_v = st.columns([1, 2])
 
     with col_f:
@@ -1202,18 +1333,18 @@ with tabs[0]:
         st.plotly_chart(vfig, use_container_width=True)
         st.session_state["_pdf_fig_violin"] = vfig
 
-    st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">95% интервалы</p>', unsafe_allow_html=True)
-    pct = lambda arr, q: int(np.percentile(arr, q))
-    table_data = {
-        "Стадия": stages,
-        "P2.5": [pct(a, 2.5) for a in arrays],
-        "Медиана": meds,
-        "P97.5": [pct(a, 97.5) for a in arrays],
-    }
-    st.dataframe(table_data, use_container_width=True, hide_index=True)
+    with st.expander("📊 95% доверительные интервалы по стадиям"):
+        pct = lambda arr, q: int(np.percentile(arr, q))
+        table_data = {
+            "Стадия": stages,
+            "P2.5": [pct(a, 2.5) for a in arrays],
+            "Медиана": meds,
+            "P97.5": [pct(a, 97.5) for a in arrays],
+        }
+        st.dataframe(table_data, use_container_width=True, hide_index=True)
 
-# ── TAB 2: Беременность ───────────────────────────────────────
-with tabs[1]:
+# ── TAB: Беременность ─────────────────────────────────────────
+with tab_preg:
     col_a, col_b = st.columns(2)
 
     with col_a:
@@ -1261,33 +1392,48 @@ with tabs[1]:
         st.session_state["_pdf_fig_bar"] = bar_fig
 
     with col_b:
-        st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">FORTUNE vs KPI vs Ансамбль</p>', unsafe_allow_html=True)
-        comp_fig = go.Figure()
-        _comp_palette = [
-            ("FORTUNE",  res["sim_p_fortune"],  C["blue"],   0.55),
-            ("KPI",      res["sim_p_kpi"],      C["orange"], 0.55),
-            ("Ансамбль", res["sim_p_combined"], C["green"],  0.75),
-        ]
-        for label, arr, col, alpha in _comp_palette:
-            comp_fig.add_trace(go.Histogram(
-                x=arr * 100, opacity=0.65, name=label,
-                marker=dict(
-                    color=hex_rgba(col, alpha),
-                    line=dict(color=hex_rgba(col, 0.90), width=0.8),
-                ),
-                xbins=dict(size=2),
-            ))
-        comp_fig.update_layout(
-            **LAYOUT,
-            barmode="overlay",
-            height=400,
-            margin=dict(l=65, r=30, t=60, b=60),
-            xaxis=dict(title="Вероятность на перенос (%)"),
-            yaxis=dict(title="Частота", gridcolor="rgba(200,210,220,0.35)"),
+        st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">Вероятность по попыткам ЭКО</p>', unsafe_allow_html=True)
+        curve = res['attempt_curve']
+        afig = go.Figure()
+        afig.add_traces([go.Scatter(
+            x=curve["attempts"] + curve["attempts"][::-1],
+            y=[p * 100 for p in curve["p_hi"]] +
+              [p * 100 for p in curve["p_lo"][::-1]],
+            fill="toself", fillcolor=hex_rgba(C["blue"], 0.10),
+            line=dict(color="rgba(0,0,0,0)"), showlegend=False, hoverinfo="skip",
+        )])
+        afig.add_trace(go.Scatter(
+            x=curve["attempts"], y=[p * 100 for p in curve["p_sel_decay"]],
+            mode="lines+markers", name="Аналит. снижение",
+            line=dict(color=hex_rgba(C["orange"], 0.80), dash="dot", width=2),
+            marker=dict(size=7, color=hex_rgba(C["orange"], 0.80)),
+        ))
+        afig.add_trace(go.Scatter(
+            x=curve["attempts"], y=[p * 100 for p in curve["p_nn_raw"]],
+            mode="lines+markers", name="NN (raw)",
+            line=dict(color=hex_rgba(C["grey"], 0.70), dash="dash", width=2),
+            marker=dict(size=7, color=hex_rgba(C["grey"], 0.70)),
+        ))
+        afig.add_trace(go.Scatter(
+            x=curve["attempts"], y=[p * 100 for p in curve["p_mean"]],
+            mode="lines+markers+text", name="Совмещённый",
+            line=dict(color=hex_rgba(C["blue"], 1.0), width=3),
+            marker=dict(size=11, color=hex_rgba(C["blue"], 0.90),
+                        line=dict(width=1.5, color="white")),
+            text=[f"{p*100:.1f}%" for p in curve["p_mean"]],
+            textposition="top center",
+            textfont=dict(family="Inter, Arial, sans-serif", size=11),
+        ))
+        afig.update_layout(
+            **LAYOUT, height=400, margin=dict(l=65, r=30, t=65, b=60),
+            xaxis=dict(title="Номер попытки", tickmode="array", tickvals=curve["attempts"]),
+            yaxis=dict(title="Вероятность беременности (%)", gridcolor="rgba(200,210,220,0.35)"),
         )
-        comp_fig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-        comp_fig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-        st.plotly_chart(comp_fig, use_container_width=True)
+        afig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
+        afig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
+        st.plotly_chart(afig, use_container_width=True)
+        st.session_state["_pdf_fig_attempts"] = afig
+        st.caption(f"Снижение per-attempt: \u03b1={curve['decay_alpha']:.2f}  (Malizia et al. NEJM 2009)")
 
     st.markdown(f"""
     <div class="result-box">
@@ -1301,8 +1447,8 @@ with tabs[1]:
     </div>
     """, unsafe_allow_html=True)
 
-# ── TAB 3: Кластер ────────────────────────────────────────────
-with tabs[2]:
+# ── TAB: Кластер ──────────────────────────────────────────────
+with tab_cluster:
     col_pca, col_info = st.columns([3, 2])
 
     with col_pca:
@@ -1390,119 +1536,8 @@ with tabs[2]:
         st.markdown(f"**Клинические рекомендации — {dom_info['name']}:**")
         st.info(dom_info['clinical_notes'])
 
-# ── TAB 4: Байес + попытки ────────────────────────────────────
-with tabs[3]:
-    col_bay, col_att = st.columns(2)
-
-    with col_bay:
-        st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">Байесовский posterior</p>', unsafe_allow_html=True)
-        x = np.linspace(0.001, 0.999, 400)
-        pp = beta_dist.pdf(x, post['posterior_alpha'], post['posterior_beta'])
-        pr = beta_dist.pdf(x, post['prior_alpha'],     post['prior_beta'])
-        bfig = go.Figure()
-        bfig.add_trace(go.Scatter(
-            x=x * 100, y=pr, mode="lines",
-            name=f"Prior (mean {post['prior_mean']*100:.1f}%)",
-            line=dict(color=hex_rgba(C["grey"], 0.65), dash="dot", width=2),
-        ))
-        bfig.add_trace(go.Scatter(
-            x=x * 100, y=pp, mode="lines", fill="tozeroy",
-            name=f"Posterior (mean {post['mean']*100:.1f}%)",
-            line=dict(color=hex_rgba(C["green"], 1.0), width=2.5),
-            fillcolor=hex_rgba(C["green"], 0.12),
-        ))
-        bfig.add_vline(
-            x=post["mean"] * 100,
-            line_dash="dash",
-            line_color=hex_rgba(C["red"], 0.80),
-            line_width=1.8,
-            annotation_text=f"Mean {post['mean']*100:.1f}%",
-            annotation_font=dict(family="Inter, Arial, sans-serif", size=11,
-                                 color=C["red"]),
-            annotation_bgcolor="rgba(255,255,255,0.85)",
-        )
-        bfig.add_vrect(
-            x0=post["ci_low"] * 100, x1=post["ci_high"] * 100,
-            fillcolor=hex_rgba(C["green"], 0.07), layer="below",
-            line_width=0,
-        )
-        bfig.update_layout(
-            **LAYOUT,
-            height=400,
-            margin=dict(l=65, r=30, t=60, b=60),
-            xaxis=dict(title="Вероятность (%)"),
-            yaxis=dict(title="Плотность", gridcolor="rgba(200,210,220,0.35)"),
-        )
-        bfig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-        bfig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-        st.plotly_chart(bfig, use_container_width=True)
-        st.session_state["_pdf_fig_bayes"] = bfig
-        st.markdown(f"""
-        **Prior:** {post['prior_type']}, mean {post['prior_mean']*100:.1f}%,
-        κ={post['prior_kappa']:.0f} |
-        **95% CI:** {post['ci_low']*100:.1f}–{post['ci_high']*100:.1f}%
-        """)
-
-    with col_att:
-        st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">Вероятность по попыткам ЭКО</p>', unsafe_allow_html=True)
-        curve = res['attempt_curve']
-        afig = go.Figure()
-        # CI-полоса (снизу)
-        afig.add_traces([go.Scatter(
-            x=curve["attempts"] + curve["attempts"][::-1],
-            y=[p * 100 for p in curve["p_hi"]] +
-              [p * 100 for p in curve["p_lo"][::-1]],
-            fill="toself",
-            fillcolor=hex_rgba(C["blue"], 0.10),
-            line=dict(color="rgba(0,0,0,0)"),
-            showlegend=False,
-            hoverinfo="skip",
-        )])
-        afig.add_trace(go.Scatter(
-            x=curve["attempts"], y=[p * 100 for p in curve["p_sel_decay"]],
-            mode="lines+markers", name="Аналит. снижение",
-            line=dict(color=hex_rgba(C["orange"], 0.80), dash="dot", width=2),
-            marker=dict(size=7, color=hex_rgba(C["orange"], 0.80)),
-        ))
-        afig.add_trace(go.Scatter(
-            x=curve["attempts"], y=[p * 100 for p in curve["p_nn_raw"]],
-            mode="lines+markers", name="NN (raw)",
-            line=dict(color=hex_rgba(C["grey"], 0.70), dash="dash", width=2),
-            marker=dict(size=7, color=hex_rgba(C["grey"], 0.70)),
-        ))
-        afig.add_trace(go.Scatter(
-            x=curve["attempts"], y=[p * 100 for p in curve["p_mean"]],
-            mode="lines+markers+text", name="Совмещённый",
-            line=dict(color=hex_rgba(C["blue"], 1.0), width=3),
-            marker=dict(
-                size=11,
-                color=hex_rgba(C["blue"], 0.90),
-                line=dict(width=1.5, color="white"),
-            ),
-            text=[f"{p*100:.1f}%" for p in curve["p_mean"]],
-            textposition="top center",
-            textfont=dict(family="Inter, Arial, sans-serif", size=11),
-        ))
-        afig.update_layout(
-            **LAYOUT,
-            height=400,
-            margin=dict(l=65, r=30, t=65, b=60),
-            xaxis=dict(
-                title="Номер попытки",
-                tickmode="array", tickvals=curve["attempts"],
-            ),
-            yaxis=dict(title="Вероятность беременности (%)",
-                       gridcolor="rgba(200,210,220,0.35)"),
-        )
-        afig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-        afig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-        st.plotly_chart(afig, use_container_width=True)
-        st.session_state["_pdf_fig_attempts"] = afig
-        st.caption(f"Снижение per-attempt: α={curve['decay_alpha']:.2f}  "
-                   f"(Malizia et al. NEJM 2009)")
-
-# ── TAB 5: Риски ─────────────────────────────────────────────
-with tabs[4]:
+# ── TAB: Риски ────────────────────────────────────────────────
+with tab_risk:
     col_r1, col_r2 = st.columns(2)
 
     with col_r1:
@@ -1524,12 +1559,18 @@ with tabs[4]:
         rfig = go.Figure(go.Bar(
             x=rl, y=rv,
             marker=dict(
-                color=[hex_rgba(c, 0.78) for c in _risk_cols],
-                line=dict(color=[hex_rgba(c, 0.95) for c in _risk_cols], width=1.5),
+                color=[hex_rgba(c, 0.28) for c in _risk_cols],   # полупрозрачная заливка
+                line=dict(color=[hex_rgba(c, 0.65) for c in _risk_cols], width=1.2),
+                pattern=dict(  # штриховка вместо ярких цветов
+                    shape="/",
+                    fgcolor=[hex_rgba(c, 0.55) for c in _risk_cols],
+                    bgcolor="rgba(0,0,0,0)",
+                    size=7, solidity=0.30,
+                ),
             ),
             text=[f"{v:.1f}%" for v in rv],
             textposition="outside",
-            textfont=dict(family="Inter, Arial, sans-serif", size=12),
+            textfont=dict(family="Inter, Arial, sans-serif", size=12, color="#5A6B7B"),
         ))
         _rv_max = max(rv) * 1.40 + 3
         rfig.update_layout(
@@ -1553,20 +1594,36 @@ with tabs[4]:
         st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">Распределение Ооцитов (ZINB)</p>', unsafe_allow_html=True)
         okk_arr = res['sim_okk']
         p_zero  = np.mean(okk_arr == 0)
-        ofig = px.histogram(okk_arr[okk_arr > 0], nbins=30, opacity=0.75,
-                            labels={"value": "Число ооцитов"})
-        ofig.update_traces(
+        _pos    = okk_arr[okk_arr > 0]
+        ofig = go.Figure()
+        ofig.add_trace(go.Histogram(
+            x=_pos, nbinsx=30, histnorm="probability density",
+            opacity=0.85, name="Гистограмма", showlegend=False,
             marker=dict(
-                color=hex_rgba(C["blue"], 0.72),
-                line=dict(color=hex_rgba(C["blue"], 0.90), width=0.8),
-            )
-        )
+                color=hex_rgba(C["blue"], 0.28),
+                line=dict(color=hex_rgba(C["blue"], 0.65), width=1.2),
+                pattern=dict(shape="/", fgcolor=hex_rgba(C["blue"], 0.55),
+                             bgcolor="rgba(0,0,0,0)", size=7, solidity=0.30),
+            ),
+        ))
+        # Линия распределения (сглаженная плотность поверх гистограммы)
+        try:
+            from scipy.stats import gaussian_kde as _kde
+            if _pos.size > 1 and np.ptp(_pos) > 0:
+                _kx = np.linspace(_pos.min(), _pos.max(), 200)
+                _ky = _kde(_pos)(_kx)
+                ofig.add_trace(go.Scatter(
+                    x=_kx, y=_ky, mode="lines", name="Плотность", showlegend=False,
+                    line=dict(color=hex_rgba(C["red"], 0.9), width=2.5),
+                ))
+        except Exception:
+            pass
         ofig.update_layout(
             **LAYOUT,
-            height=400,
+            height=400, showlegend=False,
             margin=dict(l=65, r=30, t=55, b=60),
             xaxis=dict(title="Число ооцитов"),
-            yaxis=dict(title="Частота", gridcolor="rgba(200,210,220,0.35)"),
+            yaxis=dict(title="Плотность", gridcolor="rgba(200,210,220,0.35)"),
         )
         ofig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
         ofig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
@@ -1589,7 +1646,7 @@ with tabs[4]:
 
 # ══════════════════════════════════════════════════════════════
 # ── TAB 6: Банкинг ────────────────────────────────────────────
-with tabs[5]:
+with tab_bank:
     eb = _eb
     if not eb:
         st.info("Модуль банкинга недоступен для этого расчёта.")
@@ -1751,7 +1808,7 @@ with tabs[5]:
 
 # ── TAB 7: Лабораторный прогноз (CSDI Hybrid v3 — L5) ─────────
 # ══════════════════════════════════════════════════════════════
-with tabs[6]:
+with tab_diff:
     st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">L5 · Лабораторный прогноз (CSDI Hybrid v3)</p>', unsafe_allow_html=True)
     st.markdown("""
     Гибридная генеративная модель обучена на лабораторном этапе ЭКО
@@ -2114,7 +2171,7 @@ with tabs[6]:
             """)
 
 # ── TAB 8: GAT Graph ──────────────────────────────────────────
-with tabs[7]:
+with tab_gat:
     st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">🕸️ Graph Attention Transformer — граф клинических соседей</p>', unsafe_allow_html=True)
 
     if not _gnn_bundle.get('available'):
@@ -2218,7 +2275,7 @@ with tabs[7]:
 
 # ── FOOTER ────────────────────────────────────────────────────
 st.markdown("---")
-st.caption("IVF Digital Twin v6.2  ·  Sergeev et al., 2025  ·  "
+st.caption("IVF Digital Twin v7.0  ·  from in vitro to in silico  ·  "
            "embryossa@gmail.com  ·  "
            "Research prototype — not for standalone clinical use")
 
@@ -2227,6 +2284,30 @@ st.caption("IVF Digital Twin v6.2  ·  Sergeev et al., 2025  ·  "
 #  PDF ОТЧЁТ
 # ══════════════════════════════════════════════════════════
 st.markdown("---")
+# ── TAB 9: BEFE (L7) — Bayesian Evidence Fusion ───────────────
+with tab_befe:
+    if not _BEFE_OK:
+        st.warning(f"BEFE недоступен: {_BEFE_ERR}")
+    else:
+        try:
+            # Пересчитываем BEFE здесь — к этому моменту csdi_result уже
+            # доступен в session_state если пользователь запускал Diffusion-таб.
+            _befe_res, _befe_map = build_befe_result(
+                res,
+                p_kat_raw   = _p_kat_raw,
+                ci_kat      = _ci_kat,
+                p_gnn_raw   = _p_gnn_raw,
+                gnn_result  = _gnn_result,
+                w_gnn       = _w_gnn,
+                csdi_result = st.session_state.get("csdi_result"),
+                age=float(age), amh=float(amh), afc=int(afc), bmi=float(bmi),
+                ood_stats   = st.session_state.get("_befe_ood_stats"),
+            )
+            st.session_state['_pdf_befe'] = _befe_res
+            render_befe_tab(_befe_res, _befe_map)
+        except Exception as _befe_exc:
+            st.error(f"Ошибка отображения BEFE: {_befe_exc}")
+
 st.header("📄 Экспорт отчёта")
 
 with st.expander("Сформировать PDF-отчёт для пациентки", expanded=False):
@@ -2283,6 +2364,25 @@ with st.expander("Сформировать PDF-отчёт для пациент�
 
         with st.spinner("Формирование PDF (рендеринг графиков)..."):
             try:
+                # Пересчитываем BEFE с актуальным csdi_result на момент генерации PDF
+                if _BEFE_OK:
+                    try:
+                        _befe_pdf, _ = build_befe_result(
+                            res,
+                            p_kat_raw   = _ss.get("_pdf_p_kat_raw"),
+                            ci_kat      = _ss.get("_pdf_ci_kat", (None, None)),
+                            p_gnn_raw   = _ss.get("_pdf_p_gnn_raw"),
+                            gnn_result  = _ss.get("_gnn_result"),
+                            w_gnn       = _ss.get("_pdf_w_gnn", 0.35),
+                            csdi_result = _ss.get("csdi_result"),
+                            age=float(age), amh=float(amh),
+                            afc=int(afc), bmi=float(bmi),
+                            ood_stats   = _ss.get("_befe_ood_stats"),
+                        )
+                    except Exception:
+                        _befe_pdf = _ss.get("_pdf_befe")
+                else:
+                    _befe_pdf = None
                 _pdf_bytes = generate_patient_report(
                     patient_name   = pdf_patient_name or "Не указано",
                     patient_id     = pdf_patient_id   or "—",
@@ -2315,6 +2415,7 @@ with st.expander("Сформировать PDF-отчёт для пациент�
                     p_gnn_raw      = _ss.get("_pdf_p_gnn_raw"),
                     w_gnn          = _ss.get("_pdf_w_gnn", 0.35),
                     fig_gnn        = _ss.get("_pdf_fig_gnn"),
+                    befe_result    = _befe_pdf,
                 )
 
                 _fname = f"IVF_Report_{(pdf_patient_id or 'patient').replace(' ','_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
