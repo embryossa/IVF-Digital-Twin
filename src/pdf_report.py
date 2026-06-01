@@ -1,11 +1,16 @@
 """
-IVF Digital Twin v6.2 — Клинический PDF-отчёт
+IVF Digital Twin v7.0 — Клинический PDF-отчёт
 Пастельный дизайн, читаемые графики, пригоден для печати.
 """
 
 import io, os, copy
 from datetime import datetime
 from typing import Optional
+
+try:
+    from befe_app import befe_pdf_flowables
+except Exception:
+    befe_pdf_flowables = None
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -279,7 +284,7 @@ class _PageTemplate:
 
         canvas.setFont(FB, 9.5)
         canvas.setFillColor(C_NAVY)
-        canvas.drawString(MARGIN + 1.0*cm, h - 0.70*cm, "IVF Digital Twin v6.2")
+        canvas.drawString(MARGIN + 1.0*cm, h - 0.70*cm, "IVF Digital Twin v7.0")
 
         if self.patient_name:
             canvas.setFont(F, 8.5)
@@ -295,7 +300,7 @@ class _PageTemplate:
         canvas.setFont(F, 6.5)
         canvas.setFillColor(C_GREY)
         canvas.drawString(MARGIN, 0.34*cm,
-            "IVF Digital Twin v6.2  ·  Sergeev et al., 2025  ·  embryossa@gmail.com  ·  "
+            "IVF Digital Twin v7.0  ·  from in vitro to in silico  ·  embryossa@gmail.com  ·  "
             "Research prototype — not for standalone clinical use")
         canvas.drawRightString(w - MARGIN, 0.34*cm, f"Стр. {doc.page}")
         canvas.restoreState()
@@ -324,6 +329,7 @@ def generate_patient_report(
     p_gnn_raw=None,        # GAT: чистый выход Graph Transformer
     w_gnn=0.35,            # вес GNN в ансамбле
     fig_gnn=None,          # Plotly-фигура: граф соседей
+    befe_result=None,      # BEFEResult (L7) — байесовское слияние
 ) -> bytes:
 
     buf = io.BytesIO()
@@ -337,7 +343,7 @@ def generate_patient_report(
         leftMargin=MARGIN, rightMargin=MARGIN,
         topMargin=1.6*cm, bottomMargin=1.4*cm,
         title=f"IVF Digital Twin — {patient_name}",
-        author="IVF Digital Twin v6.2",
+        author="IVF Digital Twin v7.0",
     )
 
     def pct(v):
@@ -362,7 +368,7 @@ def generate_patient_report(
         logo_img = RLImage(logo, width=1.8*cm, height=1.8*cm)
         hdr = Table(
             [[logo_img,
-              [Paragraph("IVF Digital Twin v6.2", ST["cover_title"]),
+              [Paragraph("IVF Digital Twin v7.0", ST["cover_title"]),
                Paragraph("Индивидуальный клинический отчёт", ST["cover_sub"])]]],
             colWidths=[2.2*cm, PAGE_W - 2.2*cm]
         )
@@ -370,7 +376,7 @@ def generate_patient_report(
                                   ("LEFTPADDING",(0,0),(-1,-1),0)]))
         story.append(hdr)
     else:
-        story.append(Paragraph("IVF Digital Twin v6.2", ST["cover_title"]))
+        story.append(Paragraph("IVF Digital Twin v7.0", ST["cover_title"]))
         story.append(Paragraph("Индивидуальный клинический отчёт", ST["cover_sub"]))
 
     story.append(Spacer(1, 4))
@@ -445,8 +451,18 @@ def generate_patient_report(
     _kat_sty  = _mstyle(p_kat_raw) if p_kat_raw is not None else ("mv", C_CARD_BLUE,  C_CARD_BORDER_BLUE)
     _gnn_sty  = _mstyle(p_gnn_ens) if p_gnn_ens is not None else ("mv", C_CARD_BLUE,  C_CARD_BORDER_BLUE)
 
+    # Первая карточка — итоговая вероятность L7 (BEFE), как на странице.
+    if befe_result is not None:
+        _head_val = pct(befe_result.posterior)
+        _head_lbl = "P(беременность)\nBEFE (L7)"
+        _head_sty = _mstyle(befe_result.posterior)
+    else:
+        _head_val = pct(p_transfer)
+        _head_lbl = "P(беременность)\nна перенос"
+        _head_sty = _mstyle(p_transfer)
+
     cards = Table([[
-        metric_card(pct(p_transfer), "P(беременность)\nна перенос",  *_mstyle(p_transfer), cw),
+        metric_card(_head_val,       _head_lbl,                      *_head_sty,           cw),
         metric_card(pct(p_viable),   "Если viable\nцикл",            *_mstyle(p_viable),   cw),
         metric_card(pct(p_cycle),    "P(успех\nцикла)",              *_mstyle(p_cycle),    cw),
         metric_card(_kat_val,        "KAT\n(ансамбль NN)",           *_kat_sty,            cw),
@@ -461,6 +477,12 @@ def generate_patient_report(
     story.append(cards)
     story.append(Spacer(1, 6))
     ci_parts = []
+    if befe_result is not None:
+        _ci_src = "Beta-posterior" if getattr(befe_result, "ci_source", "") == "beta-posterior" else "logit"
+        ci_parts.append(
+            f"Итоговая вероятность L7 (BEFE): <b>{pct(befe_result.posterior)}</b>  "
+            f"(95% ДИ {_ci_src}: {pct(befe_result.ci_low)} – {pct(befe_result.ci_high)}  ·  "
+            f"надёжность {befe_result.reliability}/100)")
     if p_kat_raw is not None and ci_kat[0] is not None:
         ci_parts.append(f"KAT 95% CI: <b>{pct(ci_kat[0])} – {pct(ci_kat[1])}</b>")
     if p_gnn_ens is not None:
@@ -537,17 +559,148 @@ def generate_patient_report(
             "Вероятность достижения ≥k клинических беременностей в данном цикле",
             h_cm=8, margin_b=60, margin_l=70, margin_r=30, margin_t=60))
 
+    story.append(Spacer(1, 8))
+    story.append(sec_header("Динамика вероятности по попыткам ЭКО"))
     story.append(Spacer(1, 6))
+    story.append(Paragraph(
+        "Итоговая вероятность беременности рассчитывается слоем L7 (BEFE) и "
+        "приведена в разделе байесовского слияния и в итоговом резюме. Ниже — "
+        "динамика вероятности по последовательным попыткам ЭКО.",
+        ST["body"]))
+    story.append(Spacer(1, 8))
+
+    if fig_attempts:
+        story.extend(chart_block(fig_attempts,
+            "Вероятность беременности по попыткам ЭКО",
+            h_cm=7, margin_b=60, margin_l=70, margin_r=30, margin_t=65))
+
+    # ══════════════════════════════════════════════════════════
+    #  Кластерный анализ — отдельная страница
+    # ══════════════════════════════════════════════════════════
+    story.append(PageBreak())
     story.append(sec_header("Кластерный анализ пациентки"))
     story.append(Spacer(1, 5))
 
-    ca  = res.get("cluster_analysis", {})
-    dom = ca.get("dominant_cluster", "—")
-    story.append(Paragraph(f"Доминирующий кластер: <b>{dom}</b>", ST["body"]))
+    ca    = res.get("cluster_analysis", {})
+    dom   = ca.get("dominant_cluster", 0)
+    probs = ca.get("cluster_probs", {0: 0.33, 1: 0.33, 2: 0.34})
+
+    # ── Импорт словарей из пайплайна (с fallback-копией) ──────────────────
+    try:
+        from ivf_digital_twin import (
+            CLUSTER_CENTROIDS, CLUSTER_INTERPRETATIONS,
+            CLUSTER_FEATURE_NAMES,
+        )
+    except Exception:
+        CLUSTER_FEATURE_NAMES = [
+            "Age","Attempt","Follicles","COCs","Inseminated","2PN",
+            "Cleaving","HQ_blasts","Day5","Cryo","Transferred",
+            "FertRate","CleavageRate","BlastRate","TGBDR","RetrievalEff","KPI","NNPred",
+        ]
+        CLUSTER_CENTROIDS = {
+            0: {"Age":32.4,"Follicles":20.7,"COCs":16.7,"2PN":10.6,"HQ_blasts":4.9,
+                "FertRate":0.82,"BlastRate":0.65,"TGBDR":0.48,"KPI":24.0},
+            1: {"Age":20.3,"Follicles":12.0,"COCs":9.5, "2PN":4.9, "HQ_blasts":2.0,
+                "FertRate":0.72,"BlastRate":0.65,"TGBDR":0.45,"KPI":17.7},
+            2: {"Age":31.6,"Follicles":34.7,"COCs":28.2,"2PN":17.3,"HQ_blasts":8.7,
+                "FertRate":0.83,"BlastRate":0.67,"TGBDR":0.53,"KPI":24.5},
+        }
+        CLUSTER_INTERPRETATIONS = {
+            0: {"name":"Standard Responder","preg_rate":0.54,"description":"Intermediate response.","clinical_notes":"Standard protocols."},
+            1: {"name":"Poor Responder",    "preg_rate":0.33,"description":"Limited response.",     "clinical_notes":"Individualised stimulation."},
+            2: {"name":"High Responder",    "preg_rate":0.63,"description":"Abundant yield.",       "clinical_notes":"Monitor OHSS; freeze-all."},
+        }
+
+    # ── Медианы признаков пациентки из MC-матрицы ─────────────────────────
+    import numpy as _np
+    pat_feats_raw = ca.get("patient_features")
+    pat_medians = {}
+    if pat_feats_raw is not None:
+        try:
+            pf = _np.asarray(pat_feats_raw)
+            if pf.ndim == 2 and pf.shape[1] == len(CLUSTER_FEATURE_NAMES):
+                pat_medians = {
+                    CLUSTER_FEATURE_NAMES[i]: float(_np.median(pf[:, i]))
+                    for i in range(len(CLUSTER_FEATURE_NAMES))
+                }
+        except Exception:
+            pass
+
+    # ── Таблица: Характеристики кластеров vs пациентка ───────────────────
+    C_COLOR = {0: colors.HexColor("#D6EAF8"), 1: colors.HexColor("#FDECEA"),
+               2: colors.HexColor("#EAFAF1")}
+    story.append(Paragraph("Характеристики кластеров — сравнение с пациенткой",
+                           ST["subsec"]))
+    story.append(Spacer(1, 4))
+
+    # Отображаемые признаки: (ключ, русское название, единица, формат)
+    DISP_FEATS = [
+        ("Age",       "Возраст",           "лет",  "{:.1f}"),
+        ("Follicles", "Фолликулы",         "шт.",  "{:.1f}"),
+        ("COCs",      "ОКК",               "шт.",  "{:.1f}"),
+        ("2PN",       "2PN",               "шт.",  "{:.1f}"),
+        ("HQ_blasts", "Хор.кач. бластоц.", "шт.",  "{:.1f}"),
+        ("FertRate",  "Фертилизация",      "%",    "{:.0%}"),
+        ("BlastRate", "Бластуляция",       "%",    "{:.0%}"),
+        ("TGBDR",     "TGBDR",             "%",    "{:.0%}"),
+        ("KPI",       "KPI Score",         "",     "{:.1f}"),
+    ]
+
+    def _fmt(key, val, unit):
+        try:
+            s = unit in ("%",) and f"{val:.0%}" or f"{val:.1f}"
+            return f"{s} {unit}".strip()
+        except Exception:
+            return "—"
+
+    ch_header = ["Показатель", "Пациентка\n(медиана)", "C0 Standard\n54%",
+                 "C1 Poor\n33%", "C2 High\n63%"]
+    ch_data   = [ch_header]
+    for key, ru, unit, fmt in DISP_FEATS:
+        pat_v  = pat_medians.get(key)
+        pat_s  = (fmt.format(pat_v) + (" " + unit).rstrip()).strip() if pat_v is not None else "—"
+        row = [Paragraph(ru, ST["body"]), Paragraph(f"<b>{pat_s}</b>", ST["body"])]
+        for c in (0, 1, 2):
+            cv  = CLUSTER_CENTROIDS[c].get(key)
+            cs  = (fmt.format(cv) + (" " + unit).rstrip()).strip() if cv is not None else "—"
+            row.append(Paragraph(cs, ST["body"]))
+        ch_data.append(row)
+
+    cw2 = [PAGE_W * 0.22, PAGE_W * 0.18,
+            PAGE_W * 0.20, PAGE_W * 0.20, PAGE_W * 0.20]
+    ch_tbl = Table(ch_data, colWidths=cw2, repeatRows=1)
+    ch_style = [
+        ("BACKGROUND",    (0,0), (-1,0), colors.HexColor("#1B4F72")),
+        ("TEXTCOLOR",     (0,0), (-1,0), colors.white),
+        ("FONTNAME",      (0,0), (-1,0), FB),
+        ("FONTSIZE",      (0,0), (-1,0), 9),
+        ("ALIGN",         (1,0), (-1,-1), "CENTER"),
+        ("GRID",          (0,0), (-1,-1), 0.4, colors.HexColor("#BFC9CA")),
+        ("ROWBACKGROUNDS",(0,1), (-1,-1), [colors.white, colors.HexColor("#F8FBFD")]),
+        ("FONTNAME",      (0,1), (-1,-1), F),
+        ("FONTSIZE",      (0,1), (-1,-1), 8.5),
+        ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+        ("TOPPADDING",    (0,0), (-1,-1), 3),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+        ("LEFTPADDING",   (0,0), (-1,-1), 5),
+    ]
+    # Подсветка колонки доминирующего кластера
+    dom_col = dom + 2   # col 2=C0, 3=C1, 4=C2
+    ch_style += [
+        ("BACKGROUND", (dom_col, 1), (dom_col, -1), C_COLOR[dom]),
+        ("FONTNAME",   (dom_col, 1), (dom_col, -1), FB),
+        ("BOX",        (dom_col, 0), (dom_col, -1), 1.2, colors.HexColor("#1B4F72")),
+    ]
+    ch_tbl.setStyle(TableStyle(ch_style))
+    story.append(ch_tbl)
+    story.append(Spacer(1, 10))
+
+    # ── Рекомендации и PCA ────────────────────────────────────────────────
     if cluster_recommendations:
+        story.append(Paragraph("Клинические рекомендации:", ST["subsec"]))
         story.append(Spacer(1, 3))
-        story.append(Paragraph("Рекомендации:", ST["subsec"]))
         story.append(Paragraph(cluster_recommendations, ST["reco"]))
+        story.append(Spacer(1, 6))
 
     if fig_pca:
         story.extend(chart_block(fig_pca,
@@ -555,32 +708,7 @@ def generate_patient_report(
             h_cm=9, margin_b=65, margin_l=70, margin_r=30, margin_t=65))
 
     # ══════════════════════════════════════════════════════════
-    #  СТРАНИЦА 4 — БАЙЕС + РИСКИ
-    # ══════════════════════════════════════════════════════════
-    story.append(PageBreak())
-    story.append(sec_header("Байесовский анализ и динамика по попыткам"))
-    story.append(Spacer(1, 6))
-
-    story.append(kv_table([
-        ("Posterior (среднее)",      pct(post.get("mean",0))),
-        ("95% ДИ — нижняя граница",  pct(post.get("ci_low",0))),
-        ("95% ДИ — верхняя граница", pct(post.get("ci_high",0))),
-    ], col1=6.5*cm))
-    story.append(Spacer(1, 8))
-
-    # Байес и попытки — каждый на полную ширину для читаемости
-    if fig_bayes:
-        story.extend(chart_block(fig_bayes,
-            "Байесовский posterior: prior vs posterior",
-            h_cm=7, margin_b=60, margin_l=70, margin_r=30, margin_t=60))
-
-    if fig_attempts:
-        story.extend(chart_block(fig_attempts,
-            "Кумулятивная вероятность успеха по попыткам ЭКО",
-            h_cm=7, margin_b=60, margin_l=70, margin_r=30, margin_t=65))
-
-    # ══════════════════════════════════════════════════════════
-    #  СТРАНИЦА 5 — БАНКИНГ
+    #  БАНКИНГ
     # ══════════════════════════════════════════════════════════
     if eb:
         story.append(PageBreak())
@@ -799,6 +927,15 @@ def generate_patient_report(
     # ══════════════════════════════════════════════════════════
     #  ИТОГОВОЕ РЕЗЮМЕ
     # ══════════════════════════════════════════════════════════
+    # ── BEFE (L7) section ─────────────────────────────────────
+    if befe_result is not None and befe_pdf_flowables is not None:
+        try:
+            story.extend(befe_pdf_flowables(
+                befe_result, ST, sec_header, kv_table, Paragraph, Spacer, cm,
+                PageBreak=PageBreak))
+        except Exception:
+            pass
+
     story.append(PageBreak())
     story.append(sec_header("Итоговое резюме"))
     story.append(Spacer(1, 8))
@@ -806,10 +943,17 @@ def generate_patient_report(
     summary = [
         ("Пациентка",                 f"{patient_name or '—'}  [{patient_id or '—'}]"),
         ("Возраст / АМГ / АФС",       f"{age:.0f} лет  ·  АМГ {amh:.2f} нг/мл  ·  {afc} фолликулов"),
-        ("P(беременность) на перенос",pct(p_transfer)),
+    ]
+    if befe_result is not None:
+        summary.append(("P(беременность) · BEFE (L7)",
+                        f"{pct(befe_result.posterior)}  (95% ДИ: "
+                        f"{pct(befe_result.ci_low)}\u2013{pct(befe_result.ci_high)})"))
+        summary.append(("  \u21b3 Надёжность",
+                        f"{befe_result.reliability}/100 ({befe_result.reliability_band})"))
+    summary += [
+        ("На один перенос (L1–L2)",   pct(p_transfer)),
         ("Кумулятивная (viable цикл)", pct(p_viable)),
         ("P(успех цикла)",            pct(p_cycle)),
-        ("Байесовский posterior",     f"{pct(p_bayes)}  (95% ДИ: {pct(ci_lo)}–{pct(ci_hi)})"),
         ("KAT (ансамбль NN)",          pct(p_kat_raw) if p_kat_raw is not None else "—"),
         ("GAT Ансамбль (GNN + KAT)",   pct(p_gnn_ens) if p_gnn_ens is not None else "—"),
         ("  ↳ Graph Transformer (raw)",pct(p_gnn_raw) if p_gnn_raw is not None else "—"),
@@ -829,7 +973,7 @@ def generate_patient_report(
     story.append(HRFlowable(width="100%", thickness=0.5, color=C_BORDER,
                              spaceBefore=4, spaceAfter=6))
     story.append(Paragraph(
-        "Данный отчёт сформирован системой IVF Digital Twin v6.2 и предназначен "
+        "Данный отчёт сформирован системой IVF Digital Twin v7.0 и предназначен "
         "для использования врачом-репродуктологом в качестве вспомогательного "
         "инструмента. Не является самостоятельным клиническим заключением.",
         ST["note"]
