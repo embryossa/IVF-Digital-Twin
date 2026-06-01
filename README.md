@@ -1,6 +1,7 @@
-# IVF Digital Twin v6.2
+# IVF Digital Twin v7.0
 
 **An Integrated Multi-Source Ensemble Platform for Stage-Stratified IVF Outcome Prediction**
+
 
 > Stochastic Simulation · Neural Network Ensembling · Bayesian Evidence Synthesis · Unsupervised Phenotype Classification · Diffusion-Based Generative Module · Graph Attention Network
 > 
@@ -18,9 +19,9 @@
 
 ## Overview
 
-Current clinical decision-support tools for in vitro fertilization (IVF) typically address isolated endpoints and return point estimates without quantifying the substantial biological variability inherent to reproductive medicine. They cannot incorporate stage-by-stage information as the cycle unfolds, do not benchmark a given patient against documented IVF protocol phenotypes, and do not integrate independent generative verification of laboratory outcome distributions.
+Current clinical decision-support tools for in vitro fertilization (IVF) typically address isolated endpoints and return point estimates without quantifying the substantial biological variability inherent to reproductive medicine. They cannot incorporate stage-by-stage information as the cycle unfolds, do not benchmark a given patient against documented IVF protocol phenotypes, do not integrate independent generative verification of laboratory outcome distributions, and — critically — do not synthesize the outputs of multiple independent expert models into a single calibrated final probability.
 
-**IVF Digital Twin v6.2** is a five-layer (+ GAT) probabilistic prediction system that models the entire IVF treatment trajectory as a sequential probabilistic pipeline. It is the first IVF prediction system to integrate:
+**IVF Digital Twin v7.0** is a seven-layer probabilistic prediction system that models the entire IVF treatment trajectory as a sequential probabilistic pipeline, culminating in a Bayesian Evidence Fusion Engine (BEFE, L7) that acts as the final arbiter across all upstream layers. It is the first IVF prediction system to integrate:
 
 - Stochastic stage-wise Monte Carlo simulation
 - Multi-source per-transfer ensemble prediction
@@ -29,8 +30,7 @@ Current clinical decision-support tools for in vitro fertilization (IVF) typical
 - Unsupervised phenotype classification
 - Diffusion-based generative laboratory module (CSDI Hybrid v3)
 - Graph Attention Transformer for patient-similarity reasoning (L6)
-
-…within a single transparent, auditable framework. All coefficients are traceable to peer-reviewed sources.
+- **Bayesian Evidence Fusion Engine** — trust-weighted logit-space pooling of all upstream experts into a single posterior with calibrated uncertainty and reliability scoring (L7) Within a single transparent, auditable framework. All coefficients are traceable to peer-reviewed sources.
 
 ---
 
@@ -38,8 +38,8 @@ Current clinical decision-support tools for in vitro fertilization (IVF) typical
 
 | Component | Metric | Value |
 |-----------|--------|-------|
-| Stochastic pipeline | Spearman ρ (oocyte count) | 0.73 |
-| Stochastic pipeline | Spearman ρ (blastocyst count) | 0.41 |
+| Stochastic pipeline (L1) | Spearman ρ (oocyte count) | 0.73 |
+| Stochastic pipeline (L1) | Spearman ρ (blastocyst count) | 0.41 |
 | Overall pregnancy prediction | AUC | 0.63 |
 | Overall pregnancy prediction | Brier Score | 0.22 |
 | CSDI Hybrid v3 (L5) | AUC | 0.661 |
@@ -53,36 +53,44 @@ Current clinical decision-support tools for in vitro fertilization (IVF) typical
 
 ## Architecture
 
-The system is organized into six layers that operate in series:
+The system is organized into seven layers that operate in series:
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    IVF Digital Twin v6.2                     │
-│                                                              │
-│  Patient inputs: age, AMH, AFC, BMI, attempt number         │
-│                         │                                    │
-│  L1 ─ Stochastic Monte Carlo pipeline (N=5,000 iterations)  │
-│       ZINB oocyte model → 7 sequential biological stages    │
-│                         │                                    │
-│  L2 ─ Per-transfer ensemble (FORTUNE + KPIScore)            │
-│       Three-level pregnancy decomposition                    │
-│                         │                                    │
-│  L3 ─ KAT Neural Network Ensemble                           │
-│       KAN (B-spline) + FT-Transformer + Venn-Abers calib.  │
-│       Beta-Binomial Bayesian posterior synthesis             │
-│                         │                                    │
-│  L4 ─ Unsupervised Cluster Classifier                        │
-│       Nearest-centroid in 18-dim space (k=3 phenotypes)     │
-│                         │                                    │
-│  L5 ─ CSDI Hybrid v3 Diffusion Module                       │
-│       CSDI Transformer + LightGBM + Conformal Prediction    │
-│                         │                                    │
-│  L6 ─ GAT Graph Attention Transformer                       │
-│       Patient-similarity graph · 1,172 clinical protocols   │
-│                                                              │
-│  OUTPUT: Full probability distributions, uncertainty        │
-│          intervals, phenotype label, PDF clinical report    │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                     IVF Digital Twin v7.0                        │
+│                 from in vitro to in silico                       │
+│                                                                  │
+│  Patient inputs: age, AMH, AFC, BMI, attempt number             │
+│                           │                                      │
+│  L1 ─ Stochastic Monte Carlo pipeline (N=5,000 iterations)      │
+│       ZINB oocyte model → 7 sequential biological stages        │
+│       → Mechanistic prior P(pregnancy | patient physiology)     │
+│                           │                                      │
+│  L2 ─ Per-transfer ensemble (FORTUNE + KPIScore)                │
+│       Three-level pregnancy decomposition                        │
+│                           │                                      │
+│  L3 ─ KAT Neural Network Ensemble                               │
+│       KAN (B-spline) + FT-Transformer + Venn-Abers calib.      │
+│       Beta-Binomial Bayesian posterior synthesis                 │
+│                           │                                      │
+│  L4 ─ Unsupervised Cluster Classifier                            │
+│       Nearest-centroid in 18-dim space (k=3 phenotypes)         │
+│                           │                                      │
+│  L5 ─ CSDI Hybrid v3 Diffusion Module                           │
+│       CSDI Transformer + LightGBM + Conformal Prediction        │
+│       → Equifinality verification of MC predictions             │
+│                           │                                      │
+│  L6 ─ GAT Graph Attention Transformer                           │
+│       Patient-similarity graph · 1,172 clinical protocols       │
+│                           │                                      │
+│  L7 ─ BEFE — Bayesian Evidence Fusion Engine              ◄ NEW │
+│       Prior (L1) → Evidence (L3+L6) → Posterior                │
+│       Trust-weighted logit pooling · Reliability Index          │
+│       Dual OOD detection · Beta-posterior calibrated CI         │
+│                           │                                      │
+│  OUTPUT: Single posterior probability · 95% CI                  │
+│          Reliability score · Uncertainty source · PDF report    │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Layer 1 — Stochastic Monte Carlo Pipeline
@@ -127,6 +135,129 @@ Nearest-centroid assignment to three published IVF protocol phenotypes (Poor / S
 
 A two-stage generative model trained on ~15,000 IVF cycles that independently reconstructs embryological outcome distributions without parametric rate assumptions.
 
+---
+
+### Layer 6 — Graph Attention Transformer (GAT)
+
+A patient-similarity graph model that formalizes the clinical intuition of "I've seen patients like this before."
+
+**Graph structure:** 1,172 clinical protocols as nodes; edges weighted by cosine similarity in the 18-dimensional feature space. For each new patient, the k=10 nearest neighbours are retrieved and the GAT propagates information across the subgraph.
+
+**Key metrics passed to L7:**
+- `N_eff = 1/Σ(attention_weight²)` — effective neighbour count (participation ratio). High N_eff indicates many genuinely similar patients support the prediction; low N_eff flags a rare or isolated case.
+- `Attention entropy` — breadth of neighbourhood support
+- `Neighbour outcome variance` — stability of the graph signal
+
+**Role in L7:** GAT is the **secondary empirical evidence expert**. Its precision weight in L7 is modulated by N_eff and attention entropy: a well-supported neighbourhood (N_eff ≥ 20, uniform attention) receives full weight; an isolated patient (N_eff ≤ 4) has its GAT contribution suppressed, and the posterior falls back toward the mechanistic prior.
+
+**Standalone performance:** AUC 0.632 (GNN alone) → 0.658–0.665 (GAT + KAT ensemble). The value lies not in standalone discrimination but in providing a structurally distinct, clinically grounded perspective that improves final calibration.
+
+---
+
+### Layer 7 — BEFE: Bayesian Evidence Fusion Engine *(new in v7.0)*
+
+L7 turns all upstream layers into **named experts** and acts as an **arbiter**: it does not learn a new model of pregnancy, but learns how much to trust each existing expert and fuses them into a single calibrated posterior.
+
+#### Conceptual structure
+
+```
+Mechanistic prior (L1 + L5 verification)
+        ↓
+   Prior precision τ_prior
+        ↓                         ←── Diffusion agreement (L5) modulates τ_prior
+                                  ←── Embryological OOD deflates τ_prior
+Level 1 — Evidence fusion:
+   KAT (L3, best-calibrated)  ─┐
+   GAT (L6, graph-grounded)   ─┴─→ P_predictive, τ_emp
+        ↓                         ←── Clinical OOD deflates τ_emp
+Level 2 — Bayesian update:
+   Posterior = (τ_prior · l_prior + τ_emp · l_emp) / (τ_prior + τ_emp)
+        ↓
+   Final P(pregnancy) · 95% CI · Reliability Index · OOD status
+```
+#### Mechanism
+
+Fusion is performed in **logit space** as precision-weighted pooling — a conjugate Gaussian approximation to Bayesian model averaging:
+
+```
+l_post = (τ_prior · logit(P_L1) + τ_emp · logit(P_predictive)) / (τ_prior + τ_emp)
+σ²_post = 1 / (τ_prior + τ_emp)
+P_posterior = sigmoid(l_post)
+```
+
+Each expert's precision `τ` is determined by its trust features:
+
+| Expert | Trust features |
+|--------|---------------|
+| Prior (L1) | CI width of sim_p_combined; L5 diffusion agreement |
+| KAT (L3) | MC-dropout variance; Venn-Abers CI width; ECE |
+| GAT (L6) | N_eff; attention entropy; neighbour outcome variance |
+
+**When evidence is weak** (both neural models absent, or OOD), `τ_emp → 0` and the posterior collapses to the mechanistic prior — the correct Bayesian fallback. **When the prior is uncertain** (wide MC distribution) and evidence is strong (KAT tight CI, large N_eff), evidence dominates. The fusion pull ratio (prior % / evidence %) is reported explicitly so the clinician understands which information source drove the final number.
+
+#### 95% Credible Interval
+
+The CI is sourced from the **Beta-posterior of the Bayesian clinic model** (L3), calibrated on actual clinic transfer history. This gives a clinically meaningful interval (typically ±5–10 pp) grounded in the clinic's own data — rather than a logit-space interval that may be uninformative for small τ values.
+
+#### Reliability Index (0–100)
+
+A composite score communicating prediction confidence to clinicians:
+
+```
+Reliability = 40% · Consensus(KAT, GAT)
+            + 30% · Diffusion agreement (L5)
+            + 20% · Graph stability (N_eff, entropy, neighbour variance)
+            + 10% · Cluster certainty (centroid proximity)
+```
+
+Bands: **High** (≥75) · **Moderate** (55–74) · **Low** (<55). Capped at 49 when OOD is flagged.
+
+#### Dual OOD Detection
+
+Two independent Mahalanobis-distance detectors operate on separate feature subspaces:
+
+- **OOD_clinical** — Age, AMH, AFC, BMI: flags patients whose hormonal/demographic profile lies outside the training distribution
+- **OOD_embryology** — OCC, MII, 2PN, Blast, KPI: flags cycles with unusual laboratory trajectories regardless of clinical profile
+
+`OOD_final = max(OOD_clinical, OOD_embryology)`. The distinction allows the report to state, for example: *"Clinically typical, embryologically atypical"* — giving actionable guidance on which dimension of the prediction is most uncertain.
+
+#### Source of Uncertainty Reporting
+
+When the Reliability Index falls below Moderate (or consensus is Low), BEFE reports the specific source of disagreement:
+
+```
+Source of uncertainty: KAT (L3) and GAT (L6) differ by 20 pp
+  KAT (neural network): 50%
+  GAT (patient graph):  70%
+KAT receives higher weight as the better-calibrated model.
+Possible cause: non-standard clinical/embryological ratio.
+```
+
+#### Physician-facing output
+
+Instead of five competing probabilities requiring clinical synthesis, the physician sees one final, interpretable report:
+
+```
+═══════════════════════════════════════════════
+BEFE — BAYESIAN EVIDENCE FUSION  (L7)
+═══════════════════════════════════════════════
+
+P(pregnancy) posterior:   57%
+95% CI (Beta):            36% – 45%
+Reliability:              89/100  (High)
+
+Mechanistic prior (L1):   59%
+Empirical evidence (L3+L6): 54%   [P_predictive]
+Fusion pull:              evidence 91% / prior 9%
+
+Consensus (empirical):    High
+Patient similarity:       Strong (N_eff = 32)
+Diffusion agreement (L5): Excellent
+Cluster:                  High responder phenotype
+OOD:                      No
+═══════════════════════════════════════════════
+```
+
 **Architecture:**
 
 ```
@@ -149,6 +280,24 @@ STAGE 3: SPLIT CONFORMAL PREDICTION
   Distribution-free coverage guarantees
   90% PI → actual ~91–93% coverage
 ```
+### BEFE tab
+
+The BEFE tab (⚖️ BEFE) shows the full L7 report including:
+- Headline posterior with 95% CI and Reliability Index
+- Prior → Evidence → Posterior decomposition with fusion pull ratios
+- Source-of-uncertainty block (when models disagree)
+- OOD status for clinical and embryological feature subspaces
+- Audit expander showing expert weights and input mapping
+
+The BEFE tab is computed **after** the Diffusion tab (L5), ensuring that the diffusion agreement score is available to modulate the prior precision.
+
+### Clinic configuration
+
+Edit `clinic_config.json` to set per-clinic historical batch data (successes / transfers per period). This data is used to:
+- Calibrate the Bayesian Beta-posterior (L3)
+- Provide the 95% CI for the final BEFE output
+
+The file is the single source of truth for clinic data — no manual entry in the UI is needed, preventing accidental modification by clinical users.
 
 **Why this architecture?** The previous TabDDPM v3 (FiLM-ResNet) had a +15.8 pp prevalence bias and AUROC 0.578. CSDI Hybrid v3 resolves this by separating count generation (diffusion) from binary prediction (discriminative classifier), reducing ECE from 0.158 to 0.029 and removing the bias entirely.
 
@@ -362,6 +511,62 @@ print(result['samples'])            # pd.DataFrame, 2000 × 4
 | 35 | 2.5 | 15 | Typical patient |
 | 38 | 1.5 | 10 | Mid-range borderline |
 
+## Clinical Interpretation Guide
+
+> **This system is a research prototype and decision-support tool. It does not replace clinical judgment and should not be used as the sole basis for clinical decisions.**
+
+### Reading the BEFE output
+
+| Field | Clinical meaning |
+|-------|-----------------|
+| **P(pregnancy) posterior** | Final integrated probability — the number to use in counselling |
+| **95% CI (Beta)** | Uncertainty interval calibrated on the clinic's own historical transfer data |
+| **Reliability (0–100)** | How much to trust the prediction: ≥75 = High, 55–74 = Moderate, <55 = Low |
+| **Fusion pull (evidence/prior)** | Which information source dominated: high evidence pull = data-driven; high prior pull = mechanistic fallback |
+| **Source of uncertainty** | When models disagree, the specific pair and gap are identified explicitly |
+| **OOD status** | Whether the patient falls outside the training distribution in clinical or embryological feature space |
+
+### When to pay attention to reliability
+
+**High (≥75):** All models agree, neighbourhood is well-populated, diffusion confirms MC predictions. BEFE posterior can be presented to the patient with confidence.
+
+**Moderate (55–74):** Some disagreement between KAT and GAT, or limited similar patients, or diffusion weakly confirms. Use the BEFE posterior but note the uncertainty band; present the CI explicitly.
+
+**Low (<55):** Substantial disagreement or OOD flag. BEFE still provides the best available synthesis, but the clinician should weight clinical judgment more heavily and consider the divergence source.
+
+### Equifinality verification
+
+When L1 (Monte Carlo) and L5 (CSDI diffusion) agree on blastocyst distributions (low KS statistic), the BEFE prior receives amplified precision and the Reliability Index diffusion component scores near maximum. This constitutes **equifinality verification**: two genuinely independent epistemic sources — one parametric (literature coefficients), one data-driven (15,000 cycles) — reach the same conclusion.
+
+When they diverge, the L5 component reduces prior precision in L7, widening the CI and lowering reliability. The divergence itself is diagnostically valuable for laboratory quality management.
+
+### CSDI pregnancy probability thresholds
+
+| P(pregnancy) | Interpretation |
+|-------------|----------------|
+| ≥ 0.343 | Favourable — expected laboratory outcomes support transfer |
+| 0.25–0.343 | Moderate — consider additional cycles or PGT-A |
+| < 0.25 | Cautious — low blastocyst yield warrants counselling |
+
+### Layer-by-layer probability sources
+
+| Layer | Source | Role in v7.0 |
+|-------|--------|-------------|
+| L1 MC pipeline | Mechanistic stochastic simulation | Mechanistic prior for L7 |
+| L2 FORTUNE + KPI | Population-calibrated ensemble | Defines prior CI width |
+| L3 KAT neural network | Complex feature interactions | Primary evidence expert in L7 |
+| L3 Bayesian posterior | Clinic-anchored Beta update | Provides calibrated 95% CI for final output |
+| L4 Cluster | Phenotype benchmarking | Cluster certainty → Reliability weight |
+| L5 CSDI | Independent generative verification | Modulates prior precision; equifinality flag |
+| L6 GAT | Patient-similarity reasoning | Secondary evidence expert; trust from N_eff |
+| **L7 BEFE** | **Bayesian arbiter** | **Single final posterior — the headline number** |
+
+### Quality management application
+
+The platform functions as a continuous laboratory surveillance instrument. Because it generates full predicted distributions at every cycle stage, the predicted–observed difference at each stage can be charted as a Shewhart control chart with patient-adjusted centre line and Monte Carlo-derived control limits — enabling stage-resolved discrepancy attribution and early detection of process variability.
+
+The L7 OOD detectors provide an additional surveillance layer: systematic OOD flags in embryological features (OCC, 2PN, blastocyst) may indicate equipment drift or protocol change before it becomes visible in outcome statistics.
+
 ---
 
 ## Licensing
@@ -443,7 +648,7 @@ The platform functions as a continuous laboratory surveillance instrument. Becau
 
 ## Comparison with Existing Tools
 
-| Feature | CDC IVF Estimator | Orchid Calculator | Herasight | **IVF Digital Twin v6.2** |
+| Feature | CDC IVF Estimator | Orchid Calculator | Herasight | **IVF Digital Twin v7.0** |
 |---------|------------------|-------------------|-----------|--------------------------|
 | Full probability distributions | ✗ | ✗ | ✓ | ✓ |
 | Mid-cycle conditional updating | ✗ | ✗ | ✓ | ✓ |
@@ -453,6 +658,10 @@ The platform functions as a continuous laboratory surveillance instrument. Becau
 | Patient-similarity graph reasoning | ✗ | ✗ | ✗ | ✓ |
 | Bayesian clinic-specific updating | ✗ | ✗ | ✗ | ✓ |
 | Uncertainty intervals (all stages) | ✗ | Partial | ✗ | ✓ |
+| Multi-model arbitration (BEFE) | ✗ | ✗ | ✗ | ✓ |
+| Reliability Index with source attribution | ✗ | ✗ | ✗ | ✓ |
+| Dual OOD detection | ✗ | ✗ | ✗ | ✓ |
+| Single headline posterior probability | ✗ | ✓ | ✓ | ✓ |
 | PDF clinical report | ✗ | ✗ | ✗ | ✓ |
 
 ---
