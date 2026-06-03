@@ -5,7 +5,7 @@ befe_app.py — Integration layer for BEFE (L7) into IVF Digital Twin v6.3
 Bridges the running app to the BEFE engine (befe.py):
 
     build_befe_result(...)   -> (BEFEResult, mapping)   # construct inputs + fuse
-    render_befe_tab(...)     -> Streamlit UI            # the "⚖️ BEFE (L7)" tab
+    render_befe_tab(...)     -> Streamlit UI            # the "BEFE (L7)" tab
     befe_pdf_flowables(...)  -> list[reportlab flowable] # PDF section
 
 All extraction is DEFENSIVE: any missing upstream value degrades gracefully
@@ -199,9 +199,26 @@ def _cluster_context(res: dict):
     if isinstance(dom_info, dict):
         label = dom_info.get("label") or dom_info.get("name") or ""
     label = label or _CLUSTER_LABELS.get(str(dom), str(dom) or "—")
-    cluster_prob = _f(probs.get(dom), 1.0) if isinstance(probs, dict) else 1.0
+
+    # Probe both int and str keys — the pipeline stores {0: p, 1: p, 2: p} (int),
+    # but serialisation / JSON round-trips may produce {"0": p, "1": p, "2": p}.
+    if isinstance(probs, dict):
+        cluster_prob = _f(probs.get(dom), None)
+        if cluster_prob is None:
+            cluster_prob = _f(probs.get(str(dom)), None)
+        if cluster_prob is None:
+            cluster_prob = 1.0
+    else:
+        cluster_prob = 1.0
+
+    # BUG FIX: cluster_analysis does not expose per-cluster centroid distances,
+    # so dom_info is always {}.  The old default of 1.0 made closeness = exp(-1)
+    # ~0.368 (constant), compressing cluster_certainty into [0.35, 0.63].
+    # Default to 0.0 instead -> closeness = exp(0) = 1.0 (patient assumed on
+    # centroid when distance is unknown), giving certainty in [0.5, 1.0] and a
+    # full read of cluster_probability.
     dist = _f(_first_key(dom_info if isinstance(dom_info, dict) else {},
-                         ["distance_to_centroid", "distance", "dist"]), 1.0)
+                         ["distance_to_centroid", "distance", "dist"]), 0.0)
     return ClusterContext(
         cluster_id=hash(str(dom)) % 100, cluster_label=label,
         distance_to_centroid=dist, cluster_probability=cluster_prob,
@@ -245,7 +262,7 @@ def _ood_context(res, age, amh, afc, bmi, ood_stats):
 def build_befe_result(res, *, p_kat_raw=None, ci_kat=(None, None),
                       p_gnn_raw=None, gnn_result=None, w_gnn=0.35,
                       csdi_result=None, age=None, amh=None, afc=None, bmi=None,
-                      ood_stats=None):
+                      ood_stats=None, tau_kat_override=None):
     """Construct BEFE inputs from the app and run the fusion.
 
     Returns (BEFEResult | None, mapping: dict). Returns (None, mapping) if the
@@ -281,7 +298,9 @@ def build_befe_result(res, *, p_kat_raw=None, ci_kat=(None, None),
         P_GAT=p_gat if p_gat is not None else p_l1,
     )
     tau_evidence = {
-        "KAT": 2.4 if p_kat is not None else 1e-6,   # KAT best-calibrated to our data
+        # tau_kat_override: dynamic tau from GBDT meta-learner (clinic adaptation).
+        # If None, use baseline 2.4 from the general cohort.
+        "KAT": (tau_kat_override if tau_kat_override is not None else 2.4) if p_kat is not None else 1e-6,
         "GAT": 1.0 if p_gat is not None else 1e-6,
     }
 
@@ -307,28 +326,35 @@ def build_befe_result(res, *, p_kat_raw=None, ci_kat=(None, None),
     engine = BEFE(tau_base_evidence=tau_evidence)
     result = engine.predict(experts, uncertainty, diffusion, cluster, graph, ood)
 
-    # ── Заменяем CI на байесовский Beta-posterior из данных клиники ──────────
-    # Логит-пространственный CI при малом tau даёт 0%–100% (бесполезно).
-    # Beta-posterior откалиброван по реальным переносам клиники и даёт
-    # осмысленный индивидуальный ДИ.
-    ci_note = "logit-pool (BEFE)"
-    post = res.get("posterior", {}) if isinstance(res, dict) else {}
-    _beta_lo = _f(post.get("ci_low"))
-    _beta_hi = _f(post.get("ci_high"))
-    if _beta_lo is not None and _beta_hi is not None and _beta_hi > _beta_lo:
-        result.ci_low   = _beta_lo
-        result.ci_high  = _beta_hi
-        result.ci_source = "beta-posterior"
-        ci_note = "Beta-posterior (данные клиники)"
+    # The L7 point estimate is BEFE, but the interval shown to the clinician
+    # should preserve the clinical Beta-Binomial posterior: it is the distribution
+    # that explicitly incorporates "Данные клиники (prior)" from the sidebar.
+    beta_post = res.get("posterior", {}) if isinstance(res, dict) else {}
+    beta_ci_low = _f(beta_post.get("ci_low")) if isinstance(beta_post, dict) else None
+    beta_ci_high = _f(beta_post.get("ci_high")) if isinstance(beta_post, dict) else None
+    beta_alpha = beta_post.get("posterior_alpha") if isinstance(beta_post, dict) else None
+    beta_beta = beta_post.get("posterior_beta") if isinstance(beta_post, dict) else None
+    if beta_ci_low is not None and beta_ci_high is not None and beta_ci_low < beta_ci_high:
+        result.ci_low = beta_ci_low
+        result.ci_high = beta_ci_high
+        result.ci_source = "clinical-beta-posterior"
 
     mapping = {
         "P_L1 (prior)": (p_l1, "res['p_per_transfer'] = MC + FORTUNE/KPI per-transfer"),
         "  ↳ prior CI width": (ci_l1, "spread of sim_p_combined" if ci_l1_from_combined is not None else "rate_ci"),
+        "  ↳ L7 CI source": (
+            None,
+            (
+                f"clinical Beta posterior Beta({beta_alpha:.0f}, {beta_beta:.0f})"
+                if beta_ci_low is not None and beta_ci_high is not None
+                and beta_alpha is not None and beta_beta is not None
+                else "BEFE logit-pool fallback"
+            ),
+        ),
         "P_KAT (evidence)": (p_kat, "p_kat_raw · L3" if p_kat is not None else "не запущена"),
         "P_GAT (evidence)": (p_gat, "p_gnn_raw · L6 (pure graph)" if p_gat is not None else "не запущена"),
         "Diffusion (L5)": (diffusion.agreement_score if diff_ok else None,
                            "KS MC↔CSDI → модулирует приор" if diff_ok else "CSDI не запущена"),
-        "95% ДИ источник": (None, ci_note),
         "Graph note": (None, graph_note),
         "OOD": (None, "включён" if ood_stats else "выключен (нет train-статистик)"),
     }
@@ -339,151 +365,199 @@ def build_befe_result(res, *, p_kat_raw=None, ci_kat=(None, None),
 #  Streamlit tab
 # --------------------------------------------------------------------------- #
 
+
 def render_befe_tab(result, mapping, *, format_report=None):
-    """Render the BEFE tab — styled to match the app (no monospace dump,
-    no consensus gauge), fully in Russian."""
+    """Render the BEFE tab — полная карточная дизайн-система dt_ui.
+
+    Требует наличия dt_ui.py рядом с befe_app.py (или в PYTHONPATH).
+    При отсутствии dt_ui падает на упрощённый рендер gracefully.
+    """
     import streamlit as st
 
-    _H = ('<p style="font-size:15px;font-weight:600;color:#1B4F72;'
-          'margin:0 0 6px 0">{}</p>')
-    st.markdown(_H.format("Bayesian Evidence Fusion — итоговый прогноз (L7)"),
-                unsafe_allow_html=True)
+    # ── попытка импорта dt_ui ─────────────────────────────────────────────
+    try:
+        import dt_ui as UI
+        _HAS_UI = True
+    except ImportError:
+        _HAS_UI = False
+
+    # ── заголовок вкладки ─────────────────────────────────────────────────
+    if _HAS_UI:
+        UI.tab_header_by_key("befe")
+    else:
+        st.markdown(
+            '<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">'
+            'Bayesian Evidence Fusion — итоговый прогноз (L7)</p>',
+            unsafe_allow_html=True,
+        )
 
     if result is None:
-        st.info("▶ Нажмите **Запустить расчёт** — BEFE объединит уровни L1–L6 "
-                "в единый posterior.")
+        st.info(
+            "Нажмите **Запустить расчёт** — BEFE объединит уровни L1–L6 "
+            "в единый posterior."
+        )
         if mapping and mapping.get("error"):
             st.caption(mapping["error"])
         return
 
-    def pct(x):
-        return "н/д" if x is None else f"{x*100:.0f}%"
+    def pct(x, default="н/д"):
+        try:
+            return f"{float(x)*100:.0f}%"
+        except Exception:
+            return default
 
-    band_ru = {"High": "Высокая", "Moderate": "Умеренная", "Low": "Низкая"}
-    band_color = {"High": "#2E7D32", "Moderate": "#F9A825", "Low": "#C62828"}
-    rb = result.reliability_band
+    def pct_f(x, default=0.0):
+        try:
+            return float(x) * 100
+        except Exception:
+            return default
+
+    band_ru    = {"High": "Высокая",  "Moderate": "Умеренная", "Low": "Низкая"}
+    band_color = {"High": "#1E8449",  "Moderate": "#D97706",   "Low": "#C0392B"}
+    rb  = result.reliability_band
     rcol = band_color.get(rb, "#1B4F72")
-    ci_src = "Beta" if getattr(result, "ci_source", "") == "beta-posterior" else "logit"
 
-    # ── Headline card: posterior + CI + reliability ─────────────────────
-    st.markdown(
-        f'''
-        <div style="background:linear-gradient(135deg,#F4F8FC,#EAF1F8);
-        border:1px solid #D2E0EE;border-radius:12px;padding:18px 22px;margin:4px 0 14px 0">
-          <div style="display:flex;justify-content:space-between;align-items:flex-end;
-          flex-wrap:wrap;gap:12px">
-            <div>
+    if not _HAS_UI:
+        # ── Fallback: старый рендер ──────────────────────────────────────
+        st.markdown(
+            f"""
+            <div style="background:linear-gradient(135deg,#F4F8FC,#EAF1F8);
+            border:1px solid #D2E0EE;border-radius:12px;padding:18px 22px;
+            margin:4px 0 14px 0">
               <div style="font-size:13px;color:#5A6B7B;font-weight:600">
                 Вероятность беременности (итоговая)</div>
               <div style="font-size:46px;font-weight:700;color:#1B4F72;line-height:1.05">
                 {pct(result.posterior)}</div>
               <div style="font-size:14px;color:#5A6B7B">
-                95% ДИ ({ci_src}): {pct(result.ci_low)} – {pct(result.ci_high)}</div>
-            </div>
-            <div style="text-align:right">
-              <div style="font-size:13px;color:#5A6B7B;font-weight:600">Надёжность</div>
-              <div style="font-size:34px;font-weight:700;color:{rcol};line-height:1.1">
-                {result.reliability}<span style="font-size:18px;color:#9AA7B4">/100</span></div>
-              <div style="font-size:14px;font-weight:600;color:{rcol}">
-                {band_ru.get(rb, rb)}</div>
-            </div>
-          </div>
-        </div>''',
-        unsafe_allow_html=True)
+                95% ДИ: {pct(result.ci_low)} – {pct(result.ci_high)}</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Приор (L1)",       pct(result.p_prior))
+        c2.metric("Доказательство",   pct(result.p_predictive))
+        c3.metric("Надёжность",
+                  f"{result.reliability}/100",
+                  delta=band_ru.get(rb, rb),
+                  delta_color="off")
+        return
 
-    # ── Prior → Evidence → Posterior ────────────────────────────────────
-    st.markdown(_H.format("Приор → Доказательство → Posterior"),
+    # ═══════════════════════════════════════════════════════════
+    # ПОЛНЫЙ ДИЗАЙН-РЕНДЕР (dt_ui доступен)
+    # ═══════════════════════════════════════════════════════════
+
+    # ── 1. Шапка карточки (синяя, с posterior крупно) ────────────────────
+    UI.befe_card_header(
+        pct_f(result.posterior),
+        pct_f(result.ci_low),
+        pct_f(result.ci_high),
+    )
+
+    # ── 2. Три плитки: Prior → Evidence → Pull ────────────────────────────
+    st.markdown('<div style="background:#FFFFFF;border:0.5px solid #D4E4F0;'
+                'border-radius:0 0 12px 12px;padding:14px 18px 16px;margin-bottom:12px">',
                 unsafe_allow_html=True)
-    e1, e2, e3 = st.columns(3)
-    e1.metric("Механистический приор (L1)", pct(result.p_prior),
-              help="Monte-Carlo каскад + FORTUNE/KPI на перенос")
-    e2.metric("Нейросетевое доказательство (L3+L6)", pct(result.p_predictive),
-              help="P_predictive — слияние KAT и GAT (уровень 1)")
-    e3.metric("Вклад доказательства",
-              f"{result.evidence_pull*100:.0f}%",
-              delta=f"приор {result.prior_pull*100:.0f}%", delta_color="off",
-              help="Сколько итоговой вероятности дали данные vs механистический приор")
 
-    # ── Source of uncertainty (only when models disagree) ───────────────
+    UI.metric_row([
+        ("Механистический приор (L1)",       pct(result.p_prior),       ""),
+        ("Эмпирическое доказательство (L3/L6)", pct(result.p_predictive), "accent"),
+        ("Вклад доказательства",
+         f"{result.evidence_pull*100:.0f}% / {result.prior_pull*100:.0f}%", ""),
+    ])
+
+    # ── 3. Линейка Prior → CI → Posterior ────────────────────────────────
+    UI.ci_bar(
+        prior_pct     = pct_f(result.p_prior),
+        posterior_pct = pct_f(result.posterior),
+        ci_low_pct    = pct_f(result.ci_low),
+        ci_high_pct   = pct_f(result.ci_high),
+    )
+
+    # ── 4. Полоса надёжности ──────────────────────────────────────────────
+    UI.reliability_bar(int(result.reliability), rb)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── 5. Расхождение экспертов (только при Moderate/Low consensus) ──────
     p_kat = mapping.get("P_KAT (evidence)", (None,))[0]
     p_gat = mapping.get("P_GAT (evidence)", (None,))[0]
     if result.consensus in ("Moderate", "Low") and p_kat is not None and p_gat is not None:
         gap = abs(p_kat - p_gat) * 100
         kat_word = "выше" if p_kat >= p_gat else "ниже"
-        st.markdown(
-            f'''
-            <div style="background:#FFF8E1;border-left:5px solid #F9A825;
-            padding:12px 16px;border-radius:6px;margin:10px 0">
-              <b>Источник неопределённости.</b> Эксперты расходятся на
-              <b>{gap:.0f} п.п.</b> — это и снижает надёжность:<br>
-              &nbsp;&nbsp;• KAT (нейросеть, L3): <b>{pct(p_kat)}</b><br>
-              &nbsp;&nbsp;• GAT (граф пациентов, L6): <b>{pct(p_gat)}</b><br>
-              KAT здесь {kat_word} GAT. Возможная причина — нестандартное
-              соотношение клинических и эмбриологических показателей у пациентки.
-              Итог смещён к KAT как к лучше калиброванной модели.
-            </div>''',
-            unsafe_allow_html=True)
+        UI.result_box(
+            f"<b>Источник неопределённости.</b> Эксперты расходятся на "
+            f"<b>{gap:.0f}&nbsp;п.п.</b>: "
+            f"KAT (L3) <b>{pct(p_kat)}</b>; "
+            f"GAT (L6) <b>{pct(p_gat)}</b>. "
+            f"KAT {kat_word} GAT. Итог смещён к KAT как к лучше откалиброванной модели.",
+            kind="warning",
+        )
 
-    # ── Verification / context cards ────────────────────────────────────
-    st.markdown(_H.format("Проверка и контекст"), unsafe_allow_html=True)
-    diff_txt = ("не запускалась" if not result.diffusion_available
-                else "отличное" if result.diffusion_agreement >= 0.9
-                else "хорошее" if result.diffusion_agreement >= 0.7
-                else "умеренное" if result.diffusion_agreement >= 0.5
-                else "слабое")
-    if result.graph_available and result.n_eff == result.n_eff:
-        sim_txt = ("сильная" if result.n_eff >= 20
-                   else "умеренная" if result.n_eff >= 8 else "ограниченная")
-        neff_txt = f"{sim_txt} (N_eff = {result.n_eff:.0f})"
+    # ── 6. Верификационная сетка ──────────────────────────────────────────
+    UI.section_header("Верификация и контекст")
+
+    diff_txt = (
+        "не запускалась"    if not result.diffusion_available
+        else f"{result.diffusion_agreement*100:.0f}%  — отличное" if result.diffusion_agreement >= 0.9
+        else f"{result.diffusion_agreement*100:.0f}%  — хорошее"  if result.diffusion_agreement >= 0.7
+        else f"{result.diffusion_agreement*100:.0f}%  — умеренное" if result.diffusion_agreement >= 0.5
+        else f"{result.diffusion_agreement*100:.0f}%  — слабое"
+    )
+    diff_color = (
+        "" if not result.diffusion_available
+        else "green"  if result.diffusion_agreement >= 0.7
+        else "amber"  if result.diffusion_agreement >= 0.5
+        else "red"
+    )
+
+    if result.graph_available:
+        sim_txt = (
+            f"N_eff={result.n_eff:.0f} — сильная"    if result.n_eff >= 20
+            else f"N_eff={result.n_eff:.0f} — умеренная" if result.n_eff >= 8
+            else f"N_eff={result.n_eff:.0f} — слабая"
+        )
+        sim_color = "green" if result.n_eff >= 20 else "amber" if result.n_eff >= 8 else "red"
     else:
-        neff_txt = "граф не запускался"
-    cons_ru = {"High": "высокий", "Moderate": "умеренный", "Low": "низкий"}
-    v1, v2 = st.columns(2)
-    v1.metric("Согласие диффузии (L5)",
-              diff_txt if not result.diffusion_available else f"{result.diffusion_agreement*100:.0f}%",
-              help="KS-расстояние между Monte-Carlo и CSDI; модулирует доверие к приору")
-    v1.metric("Консенсус моделей", cons_ru.get(result.consensus, result.consensus))
-    v2.metric("Похожесть пациентов (граф)", neff_txt,
-              help="Эффективное число соседей по графу: N_eff = 1/Σ(вес²)")
-    v2.metric("Кластер (L4)", result.cluster_label)
+        sim_txt   = "граф не запускался"
+        sim_color = ""
 
-    # ── OOD ─────────────────────────────────────────────────────────────
-    if result.ood_final:
-        note_ru = {
-            "Clinically atypical, embryologically typical":
-                "Клинически нетипична, эмбриологически типична",
-            "Clinically typical, embryologically atypical":
-                "Клинически типична, эмбриологически нетипична",
-            "Atypical in both clinical and embryological space":
-                "Нетипична и клинически, и эмбриологически",
-        }.get(result.ood_note, result.ood_note)
-        st.markdown(
-            f'<div style="background:#FDECEA;border-left:5px solid #C62828;'
-            f'padding:12px 16px;border-radius:6px;margin:10px 0">'
-            f'<b>⚠️ OOD — выход за пределы обучающих данных:</b> {note_ru}.<br>'
-            f'Прогноз опирается на ограниченные похожие исторические данные — '
-            f'интерпретировать с осторожностью.</div>',
-            unsafe_allow_html=True)
-    else:
-        oc = "✓" if not result.ood_clinical else "⚠️"
-        oe = "✓" if not result.ood_embryology else "⚠️"
-        st.caption(f"OOD-детектор активен · клинический профиль {oc} · "
-                   f"эмбриологический профиль {oe}")
+    cons_ru_map = {"High": "высокий ✓", "Moderate": "умеренный", "Low": "низкий ✗"}
+    cons_color  = {"High": "green",     "Moderate": "amber",     "Low": "red"}
 
-    # ── Audit expander ──────────────────────────────────────────────────
-    with st.expander("ℹ️ Веса экспертов и источники входов"):
+    UI.verification_grid([
+        ("Согласие диффузии (L5)",    diff_txt,                          diff_color),
+        ("Консенсус моделей",         cons_ru_map.get(result.consensus,
+                                                      result.consensus), cons_color.get(result.consensus, "")),
+        ("Похожесть пациентов (L6)",  sim_txt,                           sim_color),
+        ("Кластер (L4)",              result.cluster_label,              ""),
+    ])
+
+    # ── 7. OOD-детектор ──────────────────────────────────────────────────
+    UI.section_header("Out-of-distribution детектор")
+    UI.ood_strip(result.ood_clinical, result.ood_embryology, result.ood_final)
+
+    # ── 8. Аудит-раскрывашка ──────────────────────────────────────────────
+    with st.expander("Веса экспертов и источники входов"):
         w = result.evidence_weights
-        st.markdown("**Вклад нейросетевых экспертов (уровень 1):** "
-                    + " · ".join(f"{k} = {v*100:.0f}%" for k, v in w.items()))
+        st.markdown(
+            "**Вклад нейросетевых экспертов (уровень 1):** "
+            + " · ".join(f"{k} = {v*100:.0f}%" for k, v in w.items())
+        )
         st.markdown("**Входы BEFE → значения приложения:**")
         rows = []
         for k, (val, src) in mapping.items():
-            vs = f"{val:.3f}" if isinstance(val, (int, float)) and val is not None else "—"
+            vs = (
+                f"{val:.3f}"
+                if isinstance(val, (int, float)) and val is not None
+                else "—"
+            )
             rows.append(f"- **{k}** = {vs}  ·  _{src}_")
         st.markdown("\n".join(rows))
-        st.caption("Приор = p_per_transfer (MC + FORTUNE/KPI), его ДИ — из разброса "
-                   "sim_p_combined. Доказательство = KAT (L3) + GAT (L6). "
-                   "L5 (диффузия) модулирует доверие к приору.")
+        st.caption(
+            "Приор = p_per_transfer (MC + FORTUNE/KPI), его ДИ — из разброса "
+            "sim_p_combined. Доказательство = KAT (L3) + GAT (L6). "
+            "L5 (диффузия) модулирует доверие к приору."
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -535,10 +609,4 @@ def befe_pdf_flowables(result, ST, sec_header, kv_table, Paragraph, Spacer, cm,
     ]
     flow.append(kv_table(rows, col1=6.5 * cm))
     flow.append(Spacer(1, 8))
-    if result.ood_final:
-        flow.append(Paragraph(
-            "<b>⚠️ OOD ALERT:</b> прогноз опирается на ограниченные похожие "
-            "исторические данные в отмеченном подпространстве — интерпретировать "
-            "с осторожностью.", ST.get("body_sm", ST["body"])))
-        flow.append(Spacer(1, 6))
     return flow

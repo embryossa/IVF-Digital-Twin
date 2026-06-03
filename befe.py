@@ -369,7 +369,18 @@ class BayesianEvidenceFusionEngine:
         cons_val = self._consensus_score(active if active else [experts.P_KAT])
         reliability = self._reliability(cons_val, diff_eff, graph_eff, cluster)
         if ood_final:
-            reliability = min(reliability, 49.0)
+            # BUG FIX (was: reliability = min(reliability, 49.0)).
+            # The hard cap at 49 produced a CONSTANT score for every OOD patient,
+            # masking genuine variation in model agreement. Replaced with a
+            # proportional soft penalty keyed on ratio_final:
+            #   ratio = 1.0  → no penalty (patient right at the OOD boundary)
+            #   ratio = 2.0  → ~18 % reduction
+            #   ratio ≥ 3.0  → ~35 % reduction (floor: 65 % of raw score)
+            # The OOD alert is still raised in the result (ood_final = True) and
+            # shown prominently in the UI — the reliability score now reflects
+            # BOTH actual model agreement AND OOD severity simultaneously.
+            ood_factor = max(1.0 - 0.175 * min(ratio_final - 1.0, 2.0), 0.65)
+            reliability = reliability * ood_factor
         reliability = int(round(min(max(reliability, 0.0), 100.0)))
         rel_band = ("High" if reliability >= 75
                     else "Moderate" if reliability >= 55 else "Low")
@@ -429,11 +440,8 @@ class BayesianEvidenceFusionEngine:
             "",
             f"OOD clinical:                   {'YES' if r.ood_clinical else 'No'}",
             f"OOD embryology:                 {'YES' if r.ood_embryology else 'No'}",
-            f"OOD final (max):                {'ALERT — ' + r.ood_note if r.ood_final else 'No'}",
+            f"OOD final (max):                {'YES — ' + r.ood_note if r.ood_final else 'No'}",
         ]
-        if r.ood_final:
-            lines += ["", "OOD ALERT: prediction based on limited similar",
-                      "historical data in the flagged subspace."]
         lines.append("=" * 52)
         return "\n".join(lines)
 

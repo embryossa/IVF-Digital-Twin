@@ -26,6 +26,13 @@ try:
 except Exception as _befe_e:
     _BEFE_OK, _BEFE_ERR = False, str(_befe_e)
 
+# ── Дизайн-система dt_ui ─────────────────────────────────────
+try:
+    import dt_ui as UI
+    _UI_OK = True
+except ImportError:
+    _UI_OK = False
+
 # ══════════════════════════════════════════════════════════════
 #  ЕДИНЫЙ СТИЛЬ ГРАФИКОВ (применяется во всех вкладках и PDF)
 # ══════════════════════════════════════════════════════════════
@@ -49,8 +56,8 @@ def _apply_gnn_style(fig):
         import copy as _copy
         fig = _copy.deepcopy(fig)
         fig.update_layout(
-            paper_bgcolor="white",
-            plot_bgcolor="rgba(248,250,252,1)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
             font=dict(family="Inter, Arial, sans-serif", size=12, color="#1C2833"),
             margin=dict(l=55, r=30, t=60, b=55),
             legend=dict(
@@ -143,54 +150,119 @@ def _apply_gnn_style(fig):
 
 # ── Цветовые палитры ──────────────────────────────────────────
 C = {
-    "blue":   "#1565C0",
-    "teal":   "#00695C",
-    "green":  "#2E7D32",
-    "orange": "#E65100",
-    "red":    "#B71C1C",
-    "purple": "#4A148C",
-    "amber":  "#F57F17",
-    "grey":   "#546E7A",
+    "blue":   "#6F93B7",
+    "teal":   "#78AAA5",
+    "green":  "#8DBA8D",
+    "orange": "#D9A36A",
+    "red":    "#C98282",
+    "purple": "#A792C6",
+    "amber":  "#DDBB72",
+    "grey":   "#71808C",
 }
 
 # Цвета для стадий воронки / violin (7 стадий)
-STAGE_COLORS = ["#1565C0", "#1976D2", "#0288D1", "#00838F",
-                "#2E7D32", "#558B2F", "#795548"]
+STAGE_COLORS = ["#6F93B7", "#7EA9C7", "#78AAA5", "#8DBA8D",
+                "#C6B27E", "#D9A36A", "#A792C6"]
 
 # Возрастные группы
 AGE_COLORS = {
-    "<30":   "#1565C0",
-    "30–35": "#2E7D32",
-    "35–38": "#F57F17",
-    "38–41": "#E65100",
-    ">41":   "#B71C1C",
+    "<30":   "#6F93B7",
+    "30–35": "#8DBA8D",
+    "35–38": "#DDBB72",
+    "38–41": "#D9A36A",
+    ">41":   "#C98282",
 }
 
 # Кластеры
-CLUSTER_HEX = {0: "#1976D2", 1: "#C62828", 2: "#2E7D32"}
+CLUSTER_HEX = {0: "#6F93B7", 1: "#C98282", 2: "#8DBA8D"}
 CLUSTER_NAMES = {0: "C0 Standard", 1: "C1 Poor", 2: "C2 High"}
 
 # ── Базовый layout (применять через **LAYOUT) ─────────────────
-_FONT = dict(family="Inter, Arial, sans-serif", size=12, color="#1C2833")
+_FONT = dict(family="Inter, Arial, sans-serif", size=12, color="#243746")
+_GRID = "rgba(115,132,145,0.16)"
+_AXIS = "rgba(115,132,145,0.42)"
+_PLOT_BG = "rgba(0,0,0,0)"
+_HATCHES = ["/", "\\", "x", "-", "|", "+", "."]
 LAYOUT = dict(
     font=_FONT,
-    paper_bgcolor="white",
-    plot_bgcolor="rgba(248,250,252,1)",
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor=_PLOT_BG,
+    hovermode="closest",
     legend=dict(
         orientation="h",
         x=0.5, xanchor="center",
         y=1.04, yanchor="bottom",
-        bgcolor="rgba(255,255,255,0.88)",
-        bordercolor="#dddddd",
+        bgcolor="rgba(255,255,255,0.72)",
+        bordercolor="rgba(196,211,222,0.80)",
         borderwidth=1,
         font=dict(size=11),
     ),
 )
 
+
+def _apply_plot_theme(fig):
+    """Единый тихий стиль графиков: пастель, мягкая сетка, штриховка столбцов."""
+    if fig is None:
+        return fig
+    try:
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor=_PLOT_BG,
+            font=_FONT,
+            hoverlabel=dict(
+                bgcolor="white",
+                bordercolor="rgba(196,211,222,0.95)",
+                font=dict(family="Inter, Arial, sans-serif", size=12, color="#243746"),
+            ),
+        )
+        fig.update_xaxes(
+            showline=True, linecolor=_AXIS, linewidth=1,
+            gridcolor=_GRID, zeroline=False,
+            tickfont=dict(size=11, color="#526473"),
+            title_font=dict(size=12, color="#405565"),
+        )
+        fig.update_yaxes(
+            showline=True, linecolor=_AXIS, linewidth=1,
+            gridcolor=_GRID, zeroline=False,
+            tickfont=dict(size=11, color="#526473"),
+            title_font=dict(size=12, color="#405565"),
+        )
+        for i, trace in enumerate(fig.data):
+            t = getattr(trace, "type", "")
+            if t in ("bar", "histogram"):
+                try:
+                    _pattern = getattr(trace.marker, "pattern", None)
+                    _shape = getattr(_pattern, "shape", None) if _pattern is not None else None
+                    trace.marker.pattern = dict(
+                        shape=_shape or _HATCHES[i % len(_HATCHES)],
+                        solidity=0.12,
+                        fgcolor="rgba(75,92,105,0.22)",
+                        bgcolor="rgba(255,255,255,0)",
+                    )
+                    trace.marker.line.width = max(getattr(trace.marker.line, "width", 0) or 0, 0.9)
+                    if not getattr(trace.marker.line, "color", None):
+                        trace.marker.line.color = "rgba(75,92,105,0.28)"
+                except Exception:
+                    pass
+            elif t in ("scatter", "violin", "box"):
+                try:
+                    if getattr(trace, "opacity", None) is None:
+                        trace.opacity = 0.92
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return fig
+
+
+def _plot_chart(fig, **kwargs):
+    """Streamlit wrapper so every on-page Plotly chart receives the same theme."""
+    return st.plotly_chart(_apply_plot_theme(fig), **kwargs)
+
 # ── Настройка страницы ────────────────────────────────────────
 st.set_page_config(
     page_title="IVF Digital Twin",
-    page_icon="🧬",
+    page_icon="D",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -211,6 +283,21 @@ try:
 except ImportError as _ce:
     _CRYPT_ENGINE_OK = False
     _CRYPT_ENGINE_ERR = str(_ce)
+    _CRYPT_ENGINE_PYTHON = sys.executable
+    if "crypt_engine" in _CRYPT_ENGINE_ERR:
+        _CRYPT_ENGINE_HINT = (
+            "Не найден модуль `src/crypt_engine.py` рядом с `app.py`. "
+            "Запускайте приложение из корневой папки проекта, где есть папка `src`."
+        )
+    elif "cryptography" in _CRYPT_ENGINE_ERR:
+        _CRYPT_ENGINE_HINT = (
+            f"Установите пакет в тот же Python, которым запущен Streamlit: "
+            f"`\"{_CRYPT_ENGINE_PYTHON}\" -m pip install cryptography`"
+        )
+    else:
+        _CRYPT_ENGINE_HINT = (
+            "Проверьте зависимости лицензирования и запуск из корневой папки проекта."
+        )
 
 # ── Файл лицензии ─────────────────────────────────────────────
 _LICENSE_FILE = os.path.join(_BASE_DIR, "license.lic")
@@ -225,7 +312,7 @@ def _render_license_gate():
         if os.path.exists(logo_path):
             st.image(logo_path, width=90)
 
-        st.markdown("## 🧬 IVF Digital Twin v7.0")
+        st.markdown("## IVF Digital Twin v7.0")
         st.markdown("### Активация лицензии")
         st.markdown("---")
 
@@ -238,7 +325,7 @@ def _render_license_gate():
                 pass
 
         if saved_key:
-            st.info("📄 Лицензионный файл найден. Проверка...")
+            st.info("Лицензионный файл найден. Проверка...")
         else:
             st.markdown(
                 "Введите ваш лицензионный ключ, полученный от поставщика. "
@@ -268,12 +355,13 @@ def _render_license_gate():
 def _try_activate(key_str: str):
     """Проверяет и активирует лицензию."""
     if not key_str:
-        st.warning("⚠️ Введите лицензионный ключ")
+        st.warning("Введите лицензионный ключ")
         return
 
     if not _CRYPT_ENGINE_OK:
-        st.error(f"❌ Модуль криптографии недоступен: {_CRYPT_ENGINE_ERR}")
-        st.info("Выполните: pip install cryptography")
+        st.error(f"Модуль лицензирования недоступен: {_CRYPT_ENGINE_ERR}")
+        st.info(_CRYPT_ENGINE_HINT)
+        st.caption(f"Python: `{_CRYPT_ENGINE_PYTHON}`")
         return
 
     with st.spinner("Проверка лицензии..."):
@@ -290,10 +378,10 @@ def _try_activate(key_str: str):
         st.session_state[_SESSION_KEY] = True
         st.session_state["ivf_clinic_name"] = clinic_name
         st.session_state["ivf_expires"] = expires_date
-        st.success(f"✅ Лицензия активирована! Добро пожаловать, {clinic_name}")
+        st.success(f"Лицензия активирована. Добро пожаловать, {clinic_name}")
         st.rerun()
     else:
-        st.error(f"❌ {reason}")
+        st.error(reason)
         # Если файл есть но ключ невалиден — удаляем
         if os.path.exists(_LICENSE_FILE):
             try:
@@ -336,12 +424,12 @@ if _clinic and _expires:
     _days_left = (_expires - date.today()).days
     if _days_left <= 14:
         st.sidebar.warning(
-            f"⚠️ Лицензия истекает через **{_days_left} дн.** ({_expires})\n"
+            f"Лицензия истекает через **{_days_left} дн.** ({_expires})\n"
             "Обратитесь к поставщику для продления."
         )
     else:
         st.sidebar.success(
-            f"✅ Клиника: **{_clinic}**\n"
+            f"Клиника: **{_clinic}**\n"
             f"Лицензия до: {_expires} ({_days_left} дн.)"
         )
 
@@ -391,6 +479,21 @@ try:
 except ImportError as _gnn_ie:
     _GNN_LOAD_ERROR = str(_gnn_ie)
 
+# ── TRP Engine (Total Reproductive Potential) ─────────────────
+_TRP_OK    = False
+_TRP_ERROR = ""
+try:
+    from trp_engine import (
+        compute_trp    as _compute_trp,
+        build_trp_tab  as _build_trp_tab,
+        build_trp_inputs as _build_trp_inputs,
+        TRPInput       as _TRPInput,
+        PastCycle      as _PastCycle,
+    )
+    _TRP_OK = True
+except ImportError as _trp_ie:
+    _TRP_ERROR = str(_trp_ie)
+
 # Проверяем наличие скомпилированного .pyd для CSDI
 _csdi_pyd = any(
     f.startswith("embryo_csdi_v3") and f.endswith(".pyd")
@@ -437,7 +540,10 @@ _CSDI_MODEL_DIRS = [
 ]
 
 # ── CSS ───────────────────────────────────────────────────────
-st.markdown("""
+if _UI_OK:
+    UI.inject_css()
+else:
+    st.markdown("""
 <style>
     .main { background-color: #f8fafc; }
     .stMetric { background: white; border-radius: 10px;
@@ -686,7 +792,7 @@ st.sidebar.title("IVF Digital Twin v7.0")
 st.sidebar.caption("from in vitro to in silico")
 st.sidebar.markdown("---")
 
-st.sidebar.header("👩 Параметры пациентки")
+st.sidebar.header("Параметры пациентки")
 age  = st.sidebar.number_input("Возраст (лет)", 18, 50, 35, 1)
 amh  = st.sidebar.number_input("АМГ (нг/мл)", 0.01, 15.0, 2.50, 0.10,
                                  format="%.2f")
@@ -694,7 +800,7 @@ afc  = st.sidebar.number_input("АФС (антральные фолликулы)
 bmi  = st.sidebar.number_input("ИМТ (кг/м²)", 15.0, 45.0, 23.0, 0.5)
 
 st.sidebar.markdown("---")
-st.sidebar.header("⚙️ Параметры цикла")
+st.sidebar.header("Параметры цикла")
 attempt = st.sidebar.number_input("Номер попытки ЭКО", 1, 10, 1, 1)
 follicles = st.sidebar.number_input("Фолликулов на ТВП (0 = AFC)",
                                      0, 60, 0, 1)
@@ -716,7 +822,7 @@ _sperm_map = {
 sperm_source = _sperm_map[sperm_label]
 
 st.sidebar.markdown("---")
-st.sidebar.header("🔬 Байесовское обновление (mid-cycle)")
+st.sidebar.header("Байесовское обновление (mid-cycle)")
 st.sidebar.caption("Введите наблюдённые значения. Оставьте 0 = не наблюдалось.")
 
 def optional_int(val): return int(val) if val > 0 else None
@@ -738,7 +844,7 @@ known = KnownValues(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.header("🏥 Данные клиники (prior)")
+st.sidebar.header("Данные клиники (prior)")
 
 # Конфиг клиники: success/transfer батчи берутся из clinic_config.json, который
 # редактируется под каждую клинику. Файл — единственный источник данных, чтобы
@@ -798,7 +904,7 @@ n_sim = st.sidebar.select_slider(
 
 # ── Загрузка нейросети (L3) ───────────────────────────────────
 st.sidebar.markdown("---")
-st.sidebar.header("🤖 Нейросетевой модуль")
+st.sidebar.header("Нейросетевой модуль")
 
 @st.cache_resource(show_spinner="Загрузка нейросетевых моделей...")
 def get_nn_model():
@@ -807,24 +913,24 @@ def get_nn_model():
 nn_model = get_nn_model()
 
 if nn_model is not None:
-    st.sidebar.success("✅ KAT (KAN + FT-Transformer) загружен")
+    st.sidebar.success("KAT (KAN + FT-Transformer) загружен")
 else:
     if not NN_LIBS_AVAILABLE:
         if "dll_error" in NN_LIBS_ERROR:
             st.sidebar.error(
-                "❌ **Ошибка DLL (fbgemm.dll)**\n\n"
+                "**Ошибка DLL (fbgemm.dll)**\n\n"
                 "Запустите `fix_torch_dll.bat`\n\n"
                 "Работает FORTUNE+KPI без нейросети."
             )
         else:
             st.sidebar.warning(
-                "⚠️ torch не установлен\n\n"
+                "torch не установлен\n\n"
                 "Запустите `fix_torch_dll.bat`\n\n"
                 "Работает FORTUNE+KPI без нейросети."
             )
     else:
         st.sidebar.info(
-            "ℹ️ Файлы моделей не найдены.\n\n"
+            "Файлы моделей не найдены.\n\n"
             "Поместите в `src/` или `models/`:\n"
             "- `Prediction_KAN.pth`\n"
             "- `FTTransformer.joblib`\n"
@@ -834,7 +940,7 @@ else:
 
 # ── Загрузка CSDI Hybrid v3 (L5) ─────────────────────────────
 st.sidebar.markdown("---")
-st.sidebar.header("🔬 Diffusion модуль (L5)")
+st.sidebar.header("Diffusion модуль (L5)")
 CSDI_MODEL_LOAD_ERROR = ""
 
 @st.cache_resource(show_spinner="Загрузка CSDI Hybrid v3...")
@@ -877,36 +983,36 @@ def _csdi_run_and_cache(patient: dict, key: tuple):
 
 
 if csdi_model is not None:
-    st.sidebar.success(f"✅ CSDI Hybrid v3 загружен "
+    st.sidebar.success(f"CSDI Hybrid v3 загружен "
                        f"(порог: {csdi_model.best_threshold:.2f})")
 elif not _CSDI_CLASS_READY:
     st.sidebar.info(
-        "ℹ️ CSDI Hybrid v3 не загружен.\n\n"
+        "CSDI Hybrid v3 не загружен.\n\n"
         f"Причина: `{CSDI_LOAD_ERROR or 'src/embryo_csdi_v3.py не найден'}`\n\n"
         "Проверьте файл `src/embryo_csdi_v3.py` и зависимости L5."
     )
 elif CSDI_MODEL_LOAD_ERROR:
     st.sidebar.info(
-        "ℹ️ Модель CSDI найдена, но не загрузилась.\n\n"
+        "Модель CSDI найдена, но не загрузилась.\n\n"
         f"Причина: `{CSDI_MODEL_LOAD_ERROR}`\n\n"
         "Проверьте файлы в `models/embryo_v3_model/`."
     )
 else:
     st.sidebar.info(
-        "ℹ️ Модель не найдена.\n\n"
+        "Модель не найдена.\n\n"
         "Поместите папку `embryo_v3_model/` в `models/`.\n\n"
         "Обучение: `python src/embryo_csdi_v3.py`"
     )
 
 # ── Статус GNN модели (Graph Transformer) ─────────────────────
 st.sidebar.markdown("---")
-st.sidebar.header("🕸️ Graph модуль (GAT)")
+st.sidebar.header("Graph модуль (GAT)")
 
 if _gnn_bundle.get('available'):
-    st.sidebar.success("✅ GNN (Graph Transformer) загружен")
+    st.sidebar.success("GNN (Graph Transformer) загружен")
 elif not _GNN_IMPORT_OK:
     st.sidebar.warning(
-        "⚠️ torch-geometric не установлен\n\n"
+        "torch-geometric не установлен\n\n"
         "Запустите `INSTALL.bat` (шаг 8) или:\n"
         "```\npip install torch-scatter torch-sparse \\\n"
         "  torch-cluster torch-spline-conv \\\n"
@@ -917,20 +1023,20 @@ elif not _GNN_IMPORT_OK:
 else:
     _gnn_err_short = _gnn_bundle.get('error', 'Файл не найден')[:80]
     st.sidebar.info(
-        "ℹ️ GNN модель не загружена.\n\n"
+        "GNN модель не загружена.\n\n"
         f"Причина: `{_gnn_err_short}`\n\n"
         "Поместите `gnn_ivf_model.pt` в `models/`.\n\n"
         "Обучение: `python gnn_ivf_562.py clinical_protocols.xlsx`"
     )
 
-run_btn = st.sidebar.button("▶ Запустить расчёт", use_container_width=True,
+run_btn = st.sidebar.button("Запустить расчёт", use_container_width=True,
                              type="primary")
 
 # ── ГЛАВНАЯ СТРАНИЦА ──────────────────────────────────────────
 st.title("IVF Digital Twin")
 st.markdown("""
 <div class="disclaimer">
-⚠️ <b>Только для поддержки клинического решения.</b> Все прогнозы являются
+<b>Только для поддержки клинического решения.</b> Все прогнозы являются
 вероятностными оценками на основе опубликованных моделей. Окончательное
 решение принимает врач-репродуктолог.
 <br>IVF Digital Twin v7.0 · <i>from in vitro to in silico</i>
@@ -942,10 +1048,10 @@ if not run_btn:
     if st.session_state.get("_pdf_res") is None:
         col1, col2, col3 = st.columns(3)
         col1.info("← Введите данные пациентки в панели слева")
-        col2.info("Нажмите **▶ Запустить расчёт**")
+        col2.info("Нажмите **Запустить расчёт**")
         col3.info("Получите полный отчёт с графиками")
 
-        with st.expander("ℹ️ О системе"):
+        with st.expander("О системе"):
             st.markdown("""
         **IVF Digital Twin v7.0** — интегрированная система прогнозирования
         исходов ЭКО, объединяющая 7 независимых слоёв оценки.
@@ -1128,13 +1234,7 @@ ca   = res['cluster_analysis']
 post = res['posterior']
 dom  = ca['dominant_cluster']
 
-# ── Ключевые метрики ──────────────────────────────────────────
-c1, c2, c3, c4, c5 = st.columns(5)
-# c1 (итоговая вероятность) заполняется ниже, после расчёта BEFE
-c2.metric("Если цикл viable", f"{res['p_cum_if_viable']*100:.1f}%",
-          help="Кумулятивная при ≥1 эмбрионе для переноса")
-c3.metric("Успех цикла", f"{res['p_overall_cycle']*100:.1f}%",
-          help="От начала стимуляции, включая риск пустого цикла")
+# ── Ключевые метрики считаются ниже, после BEFE/GAT, и выводятся единой карточкой.
 # KAT raw (чистый выход нейросети)
 _nn_pred = res.get('nn_prediction', {})
 _nn_nvsa = res.get('nn_nvsa', {})
@@ -1187,6 +1287,22 @@ st.session_state['_pdf_w_gnn']     = _w_gnn
 
 # ── L7 BEFE — считаем здесь, чтобы posterior был главной цифрой Результатов ──
 _befe_res, _befe_map = (None, {})
+
+# ── Clinic Adaptation — загрузка JSON (рядом с OOD-статистиками) ──────────
+if "_clinic_adaptation" not in st.session_state:
+    import glob as _glob
+    _adapt_files = sorted(
+        _glob.glob(os.path.join(_BASE_DIR, "models", "clinic_adaptation_*.json"))
+    )
+    if _adapt_files:
+        try:
+            with open(_adapt_files[-1], encoding="utf-8") as _af:
+                st.session_state["_clinic_adaptation"] = json.load(_af)
+        except Exception:
+            st.session_state["_clinic_adaptation"] = None
+    else:
+        st.session_state["_clinic_adaptation"] = None
+
 if _BEFE_OK:
     # Автозагрузка OOD-статистик (создаются fit_befe_ood.py). Пока файла нет —
     # детектор просто выключен, без ошибок.
@@ -1203,6 +1319,39 @@ if _BEFE_OK:
                 }
             except Exception:
                 pass
+    # ── Применяем clinic adaptation (температура + динамический τ) ────────────
+    _adapt       = st.session_state.get("_clinic_adaptation")
+    _tau_kat_dyn = None
+    if _adapt:
+        try:
+            from calibrate_for_clinic import (
+                apply_clinic_calibration, compute_dynamic_tau_kat
+            )
+            _T = _adapt.get("temperature", {})
+            # Температурное масштабирование raw вероятностей
+            if _p_kat_raw is not None and abs(_T.get("T_kat", 1.0) - 1.0) > 0.01:
+                _p_kat_raw = apply_clinic_calibration(_p_kat_raw, "T_kat", _adapt)
+            if _p_gnn_raw is not None and abs(_T.get("T_gat", 1.0) - 1.0) > 0.01:
+                _p_gnn_raw = apply_clinic_calibration(_p_gnn_raw, "T_gat", _adapt)
+            # Динамический τ_KAT через GBDT meta-learner
+            if _adapt.get("gbdt_tau_available"):
+                _gbdt_feats = {
+                    "age":            float(age),
+                    "amh":            float(amh),
+                    "afc":            int(afc),
+                    "bmi":            float(bmi),
+                    "attempt_number": int(attempt),
+                    "okk":            float(res.get("okk_med",    0)),
+                    "mii":            float(res.get("mii_med",    0)),
+                    "pn2":            float(res.get("pn2_med",    0)),
+                    "blasts_total":   float(res.get("blasts_med", 0)),
+                    "blasts_good":    float(res.get("good_med",   0)),
+                }
+                _tau_kat_dyn = compute_dynamic_tau_kat(_gbdt_feats, _adapt)
+        except Exception as _adapt_exc:
+            pass   # адаптация недоступна — работаем без неё
+    st.session_state["_befe_tau_kat_dyn"] = _tau_kat_dyn
+
     try:
         _befe_res, _befe_map = build_befe_result(
             res,
@@ -1213,66 +1362,85 @@ if _BEFE_OK:
             w_gnn       = _w_gnn,
             csdi_result = st.session_state.get("csdi_result"),
             age=float(age), amh=float(amh), afc=int(afc), bmi=float(bmi),
-            ood_stats   = st.session_state.get("_befe_ood_stats"),
+            ood_stats        = st.session_state.get("_befe_ood_stats"),
+            tau_kat_override = _tau_kat_dyn,   # clinic-specific dynamic tau
         )
     except Exception:
         _befe_res, _befe_map = None, {}
 st.session_state['_pdf_befe'] = _befe_res
 
-# ── Заполняем c1 — итоговая вероятность (BEFE posterior как главная цифра) ──
-if _befe_res is not None:
-    c1.metric("P(беременность) · BEFE",
-              f"{_befe_res.posterior*100:.1f}%",
-              help=(f"Итоговая вероятность L7 (Bayesian Evidence Fusion). "
-                    f"95% ДИ: {_befe_res.ci_low*100:.1f}–{_befe_res.ci_high*100:.1f}%. "
-                    f"Надёжность: {_befe_res.reliability}/100. "
-                    f"На один перенос (L1–L2): {res['p_per_transfer']*100:.1f}%"))
-else:
-    c1.metric("На перенос", f"{res['p_per_transfer']*100:.1f}%",
-              help="Вероятность беременности при одном переносе (L1–L2)")
-
-if _p_kat_raw is not None:
-    c4.metric("KAT (ансамбль NN)",
-              f"{_p_kat_raw*100:.1f}%",
-              help=(f"Чистый выход нейросетевого ансамбля KAN+FT-Transformer. "
-                    f"95% CI: {_ci_kat[0]*100:.1f}–{_ci_kat[1]*100:.1f}%"
-                    if _ci_kat[0] is not None else "Чистый выход нейросетевого ансамбля"))
-else:
-    c4.metric("KAT (ансамбль NN)", "—", help="Нейросеть не загружена")
-
-# c5 — GAT Ensemble (вместо NVSA)
+# ── Визуальный summary результатов: L7 posterior как главная цифра ─────────
+_kat_display = f"{_p_kat_raw*100:.1f}%" if _p_kat_raw is not None else "—"
 if _p_gnn_ens is not None:
-    c5.metric(
-        "GAT Ансамбль",
-        f"{_p_gnn_ens*100:.1f}%",
-        help=(f"Graph Attention Transformer + KAT ансамбль. "
-              f"GNN: {_p_gnn_raw*100:.1f}%  |  "
-              f"w_GNN={_w_gnn:.2f} · w_KAT={1-_w_gnn:.2f}  |  "
-              f"AUC(CV)≈0.66 на обучающей когорте")
-    )
+    _gat_display = f"{_p_gnn_ens*100:.1f}%"
 elif _gnn_bundle.get('available'):
-    c5.metric("GAT Ансамбль", "—", help="Нажмите Рассчитать для получения предсказания GNN")
+    _gat_display = "—"
 else:
-    _gnn_err = _gnn_bundle.get('error', 'Модель не найдена')
-    c5.metric("GAT Ансамбль", "н/д",
-              help=f"GNN модель недоступна: {_gnn_err[:80]}")
+    _gat_display = "н/д"
+
+if _befe_res is not None:
+    _main_label = "P(беременность) · BEFE"
+    _main_value = f"{_befe_res.posterior*100:.1f}%"
+    _main_sub = (
+        f"Итоговая вероятность L7 · 95% ДИ: "
+        f"{_befe_res.ci_low*100:.1f}–{_befe_res.ci_high*100:.1f}% · "
+        f"Надёжность: {_befe_res.reliability}/100"
+    )
+else:
+    _main_label = "P(беременность) на перенос"
+    _main_value = f"{res['p_per_transfer']*100:.1f}%"
+    _main_sub = "Fallback L1–L2: BEFE недоступен для этого расчёта"
+
+if _UI_OK:
+    UI.result_summary_card(
+        title=_main_label,
+        value=_main_value,
+        subtitle=_main_sub,
+        badge_text="L7" if _befe_res is not None else "L2",
+        badge_kind="success" if _befe_res is not None else "warning",
+        secondary=[
+            ("Если цикл viable", f"{res['p_cum_if_viable']*100:.1f}%", ""),
+            ("Успех цикла", f"{res['p_overall_cycle']*100:.1f}%", "accent"),
+            ("KAT ensemble", _kat_display, ""),
+            ("GAT ensemble", _gat_display, "highlight"),
+        ],
+    )
+else:
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric(_main_label, _main_value, help=_main_sub)
+    c2.metric("Если цикл viable", f"{res['p_cum_if_viable']*100:.1f}%",
+              help="Кумулятивная при ≥1 эмбрионе для переноса")
+    c3.metric("Успех цикла", f"{res['p_overall_cycle']*100:.1f}%",
+              help="От начала стимуляции, включая риск пустого цикла")
+    c4.metric("KAT (ансамбль NN)", _kat_display,
+              help="Чистый выход нейросетевого ансамбля KAN+FT-Transformer")
+    c5.metric("GAT Ансамбль", _gat_display,
+              help="Graph Attention Transformer + KAT ансамбль")
 
 p_cancel = np.mean(res['sim_okk'] == 0)
 if p_cancel > 0.05:
-    st.warning(f"⚠️ Риск отмены цикла (ZINB нулевые значения): "
+    st.warning(f"Риск отмены цикла (ZINB нулевые значения): "
                f"**{p_cancel*100:.1f}%**")
 
 # ── Вкладки ───────────────────────────────────────────────────
-tab_pipeline, tab_preg, tab_risk, tab_bank, tab_cluster, tab_diff, tab_gat, tab_befe = st.tabs(
-    ["🔬 Pipeline", "📈 Беременность", "⚠️ Риски", "🏦 Банкинг",
-     "🧠 Кластер", "🧬 Diffusion", "🕸️ GAT Graph", "⚖️ BEFE"])
+tab_pipeline, tab_preg, tab_risk, tab_bank, tab_trp, tab_cluster, tab_diff, tab_gat, tab_befe = st.tabs(
+    ["L1 Pipeline", "L2 Беременность", "Риски", "Банкинг",
+     "TRP", "L4 Кластер", "L5 Diffusion", "L6 GAT Graph", "L7 BEFE"])
 
 # ── TAB: Pipeline ─────────────────────────────────────────────
 with tab_pipeline:
+    if _UI_OK:
+        UI.tab_header_by_key("pipeline")
+        UI.metric_row([
+            ("ОКК (медиана)",           f"{int(res['okk_med'])}",         ""),
+            ("Бластоцист (медиана)",    f"{int(res['blasts_med'])}",      ""),
+            ("Хор.кач. (медиана)",      f"{int(res['good_med'])}",        "accent"),
+            ("Эупл. прогноз (медиана)", f"{int(res['euploid_med'])}",     "highlight"),
+        ])
     col_f, col_v = st.columns([1, 2])
 
     with col_f:
-        st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">Воронка (медианы)</p>', unsafe_allow_html=True)
+        (UI.section_header if _UI_OK else lambda _t: st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">{_t}</p>', unsafe_allow_html=True))("Воронка (медианы)")
         stages = ["ОКК", "MII", "2PN", "Бласт.", "Хор.кач.", "Эупл.", "Разм."]
         meds   = [int(res['okk_med']), int(res['mii_med']), int(res['pn2_med']),
                   int(res['blasts_med']), int(res['good_med']),
@@ -1297,7 +1465,7 @@ with tab_pipeline:
         st.session_state["_pdf_fig_funnel"] = funnel
 
     with col_v:
-        st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">Распределения по стадиям</p>', unsafe_allow_html=True)
+        (UI.section_header if _UI_OK else lambda _t: st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">{_t}</p>', unsafe_allow_html=True))("Распределения по стадиям")
         arrays = [res['sim_okk'], res['sim_mii'], res['sim_pn2'],
                   res['sim_blasts'], res['sim_good'],
                   res['sim_euploid'], res['sim_warmed']]
@@ -1333,7 +1501,7 @@ with tab_pipeline:
         st.plotly_chart(vfig, use_container_width=True)
         st.session_state["_pdf_fig_violin"] = vfig
 
-    with st.expander("📊 95% доверительные интервалы по стадиям"):
+    with st.expander("95% доверительные интервалы по стадиям"):
         pct = lambda arr, q: int(np.percentile(arr, q))
         table_data = {
             "Стадия": stages,
@@ -1345,10 +1513,18 @@ with tab_pipeline:
 
 # ── TAB: Беременность ─────────────────────────────────────────
 with tab_preg:
+    if _UI_OK:
+        UI.tab_header("L2", "Беременность", "FORTUNE · KPIScore · трёхуровневая декомпозиция", "L2")
+        UI.metric_row([
+            ("На один перенос",          f"{res['p_per_transfer']*100:.1f}%",   ""),
+            ("Cumul. если viable",       f"{res['p_cum_if_viable']*100:.1f}%",  "accent"),
+            ("Успех цикла (от стим.)",   f"{res['p_overall_cycle']*100:.1f}%",  "highlight"),
+            ("P(viable цикл)",           f"{res['p_viable']*100:.0f}%",         ""),
+        ])
     col_a, col_b = st.columns(2)
 
     with col_a:
-        st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">Шансы ≥k беременностей в цикле</p>', unsafe_allow_html=True)
+        (UI.section_header if _UI_OK else lambda _t: st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">{_t}</p>', unsafe_allow_html=True))("Шансы ≥k беременностей в цикле")
         p_at_least = pregnancy_count_distribution(res, max_k=12)
         _k_labels = [f"≥{k}" for k in range(1, 13)]
         _bar_colors = [hex_rgba(C["blue"], 0.75 - k * 0.04) for k in range(12)]
@@ -1392,7 +1568,7 @@ with tab_preg:
         st.session_state["_pdf_fig_bar"] = bar_fig
 
     with col_b:
-        st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">Вероятность по попыткам ЭКО</p>', unsafe_allow_html=True)
+        (UI.section_header if _UI_OK else lambda _t: st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">{_t}</p>', unsafe_allow_html=True))("Вероятность по попыткам ЭКО")
         curve = res['attempt_curve']
         afig = go.Figure()
         afig.add_traces([go.Scatter(
@@ -1435,7 +1611,19 @@ with tab_preg:
         st.session_state["_pdf_fig_attempts"] = afig
         st.caption(f"Снижение per-attempt: \u03b1={curve['decay_alpha']:.2f}  (Malizia et al. NEJM 2009)")
 
-    st.markdown(f"""
+    if _UI_OK:
+        UI.result_box(
+            f"<b>Трёхуровневая декомпозиция вероятности беременности:</b><br><br>"
+            f"<b>[1] На один перенос:</b> {res['p_per_transfer']*100:.1f}%"
+            f" &nbsp;&nbsp;<span style='color:#5A6B7B'>(если перенос состоится)</span><br>"
+            f"<b>[2] Если цикл viable (≥1 перенос):</b> {res['p_cum_if_viable']*100:.1f}%"
+            f" &nbsp;&nbsp;(95% CI: {res['rate_ci'][0]*100:.1f}–{res['rate_ci'][1]*100:.1f}%)<br>"
+            f"<b>[3] Успех цикла (от стимуляции):</b> {res['p_overall_cycle']*100:.1f}%"
+            f" &nbsp;&nbsp;= P(viable {res['p_viable']*100:.0f}%) × [2]",
+            kind="info",
+        )
+    else:
+        st.markdown(f"""
     <div class="result-box">
     <b>Трёхуровневая декомпозиция вероятности беременности:</b><br><br>
     <b>[1] На один перенос:</b> {res['p_per_transfer']*100:.1f}%
@@ -1449,10 +1637,12 @@ with tab_preg:
 
 # ── TAB: Кластер ──────────────────────────────────────────────
 with tab_cluster:
+    if _UI_OK:
+        UI.tab_header("L4", "Кластер", "Ближайший центроид · 18D z-пространство · k-means k=3", "L4")
     col_pca, col_info = st.columns([3, 2])
 
     with col_pca:
-        st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">PCA(2) — кластерная принадлежность</p>', unsafe_allow_html=True)
+        (UI.section_header if _UI_OK else lambda _t: st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">{_t}</p>', unsafe_allow_html=True))("PCA(2) — кластерная принадлежность")
         n_syn = ca['n_synthetic']
         emb   = ca['pca_embedded']
         syn_2d    = emb[:n_syn]
@@ -1517,13 +1707,25 @@ with tab_cluster:
         st.session_state["_pdf_fig_pca"] = pca_fig
 
     with col_info:
-        st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">Распределение по кластерам</p>', unsafe_allow_html=True)
+        if _UI_OK:
+            UI.section_header("Распределение по кластерам")
+        else:
+            st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">Распределение по кластерам</p>', unsafe_allow_html=True)
         probs = ca['cluster_probs']
         for c in (0,1,2):
             info = CLUSTER_INTERPRETATIONS[c]
-            css  = ["cluster-c0","cluster-c1","cluster-c2"][c]
             mark = " ← доминирует" if c == dom else ""
-            st.markdown(f"""
+            if _UI_OK:
+                kind_map = {0: "info", 1: "danger", 2: "success"}
+                UI.result_box(
+                    f"<b>C{c} — {info['name']}{mark}</b><br>"
+                    f"Прогноз беременности: {info['preg_rate']*100:.0f}%<br>"
+                    f"<b>Вероятность: {probs[c]*100:.1f}%</b>",
+                    kind=kind_map[c],
+                )
+            else:
+                css = ["cluster-c0","cluster-c1","cluster-c2"][c]
+                st.markdown(f"""
             <div class="{css}">
             <b>C{c} — {info['name']}{mark}</b><br>
             Прогноз беременности: {info['preg_rate']*100:.0f}%<br>
@@ -1538,10 +1740,12 @@ with tab_cluster:
 
 # ── TAB: Риски ────────────────────────────────────────────────
 with tab_risk:
+    if _UI_OK:
+        UI.tab_header("", "Риски", "ССЯГ · пустой цикл · ZINB-распределение ооцитов", "L1")
     col_r1, col_r2 = st.columns(2)
 
     with col_r1:
-        st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">Профиль рисков</p>', unsafe_allow_html=True)
+        (UI.section_header if _UI_OK else lambda _t: st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">{_t}</p>', unsafe_allow_html=True))("Профиль рисков")
         ohss  = res['ohss']
         empty = res['empty']
         rl = ["ССЯГ умеренный\n(15–19 ооц.)",
@@ -1591,7 +1795,7 @@ with tab_risk:
         st.session_state["_pdf_fig_risks"] = rfig
 
     with col_r2:
-        st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">Распределение Ооцитов (ZINB)</p>', unsafe_allow_html=True)
+        (UI.section_header if _UI_OK else lambda _t: st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">{_t}</p>', unsafe_allow_html=True))("Распределение Ооцитов (ZINB)")
         okk_arr = res['sim_okk']
         p_zero  = np.mean(okk_arr == 0)
         _pos    = okk_arr[okk_arr > 0]
@@ -1638,20 +1842,22 @@ with tab_risk:
         """)
 
         if p_zero > 0.05:
-            st.error(f"⛔ Высокий риск отмены цикла: {p_zero*100:.1f}%")
+            st.error(f"Высокий риск отмены цикла: {p_zero*100:.1f}%")
         elif p_zero > 0.02:
-            st.warning(f"⚠️ Умеренный риск отмены: {p_zero*100:.1f}%")
+            st.warning(f"Умеренный риск отмены: {p_zero*100:.1f}%")
         else:
-            st.success(f"✅ Риск отмены низкий: {p_zero*100:.1f}%")
+            st.success(f"Риск отмены низкий: {p_zero*100:.1f}%")
 
 # ══════════════════════════════════════════════════════════════
 # ── TAB 6: Банкинг ────────────────────────────────────────────
 with tab_bank:
+    if _UI_OK:
+        UI.tab_header_by_key("banking")
     eb = _eb
     if not eb:
         st.info("Модуль банкинга недоступен для этого расчёта.")
     else:
-        st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">Эуплоидность и банкинг ооцитов</p>', unsafe_allow_html=True)
+        (UI.section_header if _UI_OK else lambda _t: st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">{_t}</p>', unsafe_allow_html=True))("Эуплоидность и банкинг ооцитов")
         st.caption("Независимый модуль планирования банкинга; не влияет на S1–S6b")
 
         c1, c2, c3 = st.columns(3)
@@ -1780,17 +1986,17 @@ with tab_bank:
             fwd_med = eb['forward_at_median']['median']
             if fwd_med >= need50:
                 st.success(
-                    f"✅ При MII медиане {eb['patient_mii_median']} ожидается "
+                    f"При MII медиане {eb['patient_mii_median']} ожидается "
                     f"~{eb['forward_at_median']['mean']:.1f} эуплоидных — "
                     f"достаточно для цели 50% ({need50})")
             else:
                 st.warning(
-                    f"⚠️ При MII медиане {eb['patient_mii_median']} ожидается "
+                    f"При MII медиане {eb['patient_mii_median']} ожидается "
                     f"~{eb['forward_at_median']['mean']:.1f} эуплоидных — "
                     f"для 50% нужно {need50}. Рекомендуется банкинг "
                     f"дополнительных циклов.")
 
-        with st.expander("ℹ️ Параметры модели банкинга"):
+        with st.expander("Параметры модели банкинга"):
             st.markdown(f"""
             | Параметр | Значение |
             |---|---|
@@ -1808,8 +2014,68 @@ with tab_bank:
 
 # ── TAB 7: Лабораторный прогноз (CSDI Hybrid v3 — L5) ─────────
 # ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════
+#  TRP TAB — Совокупный репродуктивный потенциал
+# ══════════════════════════════════════════════════════════
+with tab_trp:
+    if not _TRP_OK:
+        st.warning(f"TRP Engine недоступен: {_TRP_ERROR}. "
+                   "Убедитесь, что trp_engine.py находится рядом с app.py.")
+    else:
+        st.markdown(
+            "### Совокупный репродуктивный потенциал (TRP)",
+        )
+        st.caption(
+            "Сколько биологически возможных попыток остаётся, "
+            "как меняется шанс с каждым годом, и какова суммарная "
+            "вероятность хотя бы одной клинической беременности до закрытия окна."
+        )
+
+        # ── Входные данные TRP ──────────────────────────────
+        # p_base = p_overall_cycle из основного расчёта Digital Twin.
+        # Это якорь: TRP использует его как абсолютный уровень
+        # для цикла 0; будущие циклы получают относительную коррекцию.
+        _trp_p_base = res.get("p_overall_cycle") if "res" in dir() else None
+        trp_inp = _build_trp_inputs(
+            current_age  = float(age),
+            current_amh  = float(amh),
+            current_afc  = int(afc),
+            current_bmi  = float(bmi),
+            p_base       = _trp_p_base,
+        )
+
+        run_trp_btn = st.button(
+            "Рассчитать TRP",
+            key="run_trp",
+            type="primary",
+            use_container_width=False,
+        )
+
+        if run_trp_btn:
+            with st.spinner("MC-симуляция траекторий... (~2 сек)"):
+                try:
+                    _trp_res = _compute_trp(trp_inp)
+                    st.session_state["_trp_result"] = _trp_res
+                except Exception as _trp_exc:
+                    st.error(f"Ошибка TRP: {_trp_exc}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
+        if "_trp_result" in st.session_state:
+            try:
+                _build_trp_tab(st.session_state["_trp_result"], theme_fn=_apply_plot_theme)
+            except Exception as _trp_render_exc:
+                st.error(f"Ошибка отображения TRP: {_trp_render_exc}")
+        else:
+            st.info(
+                "Заполните параметры горизонта выше и нажмите "
+                "**Рассчитать TRP** для запуска симуляции."
+            )
+
 with tab_diff:
-    st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">L5 · Лабораторный прогноз (CSDI Hybrid v3)</p>', unsafe_allow_html=True)
+    if _UI_OK:
+        UI.tab_header("L5", "Diffusion", "CSDI Hybrid v3 · ~15 000 циклов · конформные предиктивные интервалы", "L5")
+    (UI.section_header if _UI_OK else lambda _t: st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">{_t}</p>', unsafe_allow_html=True))("L5 · Лабораторный прогноз (CSDI Hybrid v3)")
     st.markdown("""
     Гибридная генеративная модель обучена на лабораторном этапе ЭКО
     и генерирует синтетические пары **(Число Bl, Число Bl хор.кач.)** без
@@ -1820,9 +2086,20 @@ with tab_diff:
 
     if csdi_model is None:
         # ── Модель не загружена ───────────────────────────────
-        st.markdown("""
+        if _UI_OK:
+            UI.result_box(
+                "<b>CSDI Hybrid v3 не загружен</b><br><br>"
+                "Для активации этой вкладки необходимо:<br>"
+                "1. Убедиться, что <code>src/embryo_csdi_v3.py</code> присутствует<br>"
+                "2. Обучить модель: <code>python src/embryo_csdi_v3.py</code><br>"
+                "3. Скопировать папку <code>embryo_v3_model/</code> в <code>models/</code><br><br>"
+                "MC-результаты (вкладки 1–6) работают независимо.",
+                kind="warning",
+            )
+        else:
+            st.markdown("""
         <div class="diff-warn">
-        <b>⚠️ CSDI Hybrid v3 не загружен</b><br><br>
+        <b>CSDI Hybrid v3 не загружен</b><br><br>
         Для активации этой вкладки необходимо:<br>
         1. Убедиться, что <code>src/embryo_csdi_v3.py</code> присутствует<br>
         2. Обучить модель: <code>python src/embryo_csdi_v3.py</code><br>
@@ -1884,7 +2161,7 @@ with tab_diff:
 
         # Прогноз по порогу
         _pred_ok = _p_csdi >= _opt_thr
-        _pred_label = "✅ Благоприятный" if _pred_ok else "⚠️ Осторожный"
+        _pred_label = "Благоприятный" if _pred_ok else "Осторожный"
         _pred_color = "#2E7D32" if _pred_ok else "#E65100"
         st.markdown(
             f'<div class="{"diff-box" if _pred_ok else "diff-warn"}">'
@@ -1909,18 +2186,22 @@ with tab_diff:
 
             blfig = go.Figure()
             blfig.add_trace(go.Histogram(
-                x=_mc_bl, name="MC pipeline", opacity=0.68,
+                x=_mc_bl, name="MC pipeline", opacity=0.58,
+                histnorm="probability density",
                 marker=dict(
-                    color=hex_rgba(C["blue"], 0.68),
-                    line=dict(color=hex_rgba(C["blue"], 0.90), width=0.8),
+                    color=hex_rgba(C["blue"], 0.56),
+                    line=dict(color=hex_rgba(C["blue"], 0.95), width=1.4),
+                    pattern=dict(shape="/", solidity=0.16),
                 ),
                 xbins=dict(size=1),
             ))
             blfig.add_trace(go.Histogram(
-                x=_csdi_bl, name="CSDI", opacity=0.68,
+                x=_csdi_bl, name="CSDI", opacity=0.58,
+                histnorm="probability density",
                 marker=dict(
-                    color=hex_rgba(C["green"], 0.68),
-                    line=dict(color=hex_rgba(C["green"], 0.90), width=0.8),
+                    color=hex_rgba(C["green"], 0.56),
+                    line=dict(color=hex_rgba(C["green"], 0.95), width=1.4),
+                    pattern=dict(shape="\\", solidity=0.16),
                 ),
                 xbins=dict(size=1),
             ))
@@ -1930,15 +2211,15 @@ with tab_diff:
                 height=340,
                 margin=dict(l=60, r=30, t=50, b=55),
                 xaxis=dict(title="Число бластоцист"),
-                yaxis=dict(title="Частота"),
+                yaxis=dict(title="Плотность"),
             )
             blfig.add_annotation(
                 text=f"KS={_ks_bl:.3f}  p={_p_bl:.3f}  {'✓ схожи' if _p_bl > 0.05 else '≠ различны'}",
                 xref="paper", yref="paper", x=0.99, y=0.99,
                 showarrow=False,
                 font=dict(size=10, color=C["green"] if _p_bl > 0.05 else C["red"]),
-                bgcolor="rgba(255,255,255,0.85)",
-                bordercolor="#ccc", borderwidth=1, borderpad=4,
+                bgcolor="rgba(244,247,250,0.90)",
+                bordercolor="rgba(115,132,145,0.28)", borderwidth=1, borderpad=4,
             )
             blfig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
             blfig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
@@ -1955,18 +2236,22 @@ with tab_diff:
 
             tfig = go.Figure()
             tfig.add_trace(go.Histogram(
-                x=_mc_tgbdr * 100, name="MC pipeline", opacity=0.68,
+                x=_mc_tgbdr * 100, name="MC pipeline", opacity=0.58,
+                histnorm="probability density",
                 marker=dict(
-                    color=hex_rgba(C["blue"], 0.68),
-                    line=dict(color=hex_rgba(C["blue"], 0.90), width=0.8),
+                    color=hex_rgba(C["blue"], 0.56),
+                    line=dict(color=hex_rgba(C["blue"], 0.95), width=1.4),
+                    pattern=dict(shape="/", solidity=0.16),
                 ),
                 xbins=dict(size=2),
             ))
             tfig.add_trace(go.Histogram(
-                x=_csdi_tgbdr * 100, name="CSDI", opacity=0.68,
+                x=_csdi_tgbdr * 100, name="CSDI", opacity=0.58,
+                histnorm="probability density",
                 marker=dict(
-                    color=hex_rgba(C["green"], 0.68),
-                    line=dict(color=hex_rgba(C["green"], 0.90), width=0.8),
+                    color=hex_rgba(C["green"], 0.56),
+                    line=dict(color=hex_rgba(C["green"], 0.95), width=1.4),
+                    pattern=dict(shape="\\", solidity=0.16),
                 ),
                 xbins=dict(size=2),
             ))
@@ -1976,15 +2261,15 @@ with tab_diff:
                 height=340,
                 margin=dict(l=60, r=30, t=50, b=55),
                 xaxis=dict(title="TGBDR (%)"),
-                yaxis=dict(title="Частота"),
+                yaxis=dict(title="Плотность"),
             )
             tfig.add_annotation(
                 text=f"KS={_ks_tgbdr:.3f}  p={_p_tgbdr:.3f}  {'✓ схожи' if _p_tgbdr > 0.05 else '≠ различны'}",
                 xref="paper", yref="paper", x=0.99, y=0.99,
                 showarrow=False,
                 font=dict(size=10, color=C["green"] if _p_tgbdr > 0.05 else C["red"]),
-                bgcolor="rgba(255,255,255,0.85)",
-                bordercolor="#ccc", borderwidth=1, borderpad=4,
+                bgcolor="rgba(244,247,250,0.90)",
+                bordercolor="rgba(115,132,145,0.28)", borderwidth=1, borderpad=4,
             )
             tfig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
             tfig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
@@ -2002,18 +2287,22 @@ with tab_diff:
 
             gbfig = go.Figure()
             gbfig.add_trace(go.Histogram(
-                x=_mc_gb, name="MC", opacity=0.68,
+                x=_mc_gb, name="MC", opacity=0.58,
+                histnorm="probability density",
                 marker=dict(
-                    color=hex_rgba(C["blue"], 0.68),
-                    line=dict(color=hex_rgba(C["blue"], 0.90), width=0.8),
+                    color=hex_rgba(C["blue"], 0.56),
+                    line=dict(color=hex_rgba(C["blue"], 0.95), width=1.4),
+                    pattern=dict(shape="/", solidity=0.16),
                 ),
                 xbins=dict(size=1),
             ))
             gbfig.add_trace(go.Histogram(
-                x=_csdi_gb, name="CSDI", opacity=0.68,
+                x=_csdi_gb, name="CSDI", opacity=0.58,
+                histnorm="probability density",
                 marker=dict(
-                    color=hex_rgba(C["green"], 0.68),
-                    line=dict(color=hex_rgba(C["green"], 0.90), width=0.8),
+                    color=hex_rgba(C["green"], 0.56),
+                    line=dict(color=hex_rgba(C["green"], 0.95), width=1.4),
+                    pattern=dict(shape="\\", solidity=0.16),
                 ),
                 xbins=dict(size=1),
             ))
@@ -2022,14 +2311,14 @@ with tab_diff:
                 barmode="overlay",
                 height=280,
                 xaxis=dict(title="Число бластоцист хор. кач."),
-                yaxis=dict(title="Частота"),
+                yaxis=dict(title="Плотность"),
             )
             gbfig.add_annotation(
                 text=f"KS={_ks_gb:.3f}  p={_p_gb:.3f}",
                 xref="paper", yref="paper", x=0.99, y=0.99,
                 showarrow=False, font=dict(size=10),
-                bgcolor="rgba(255,255,255,0.85)",
-                bordercolor="#ccc", borderwidth=1, borderpad=4,
+                bgcolor="rgba(244,247,250,0.90)",
+                bordercolor="rgba(115,132,145,0.28)", borderwidth=1, borderpad=4,
             )
             gbfig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
             gbfig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
@@ -2044,18 +2333,22 @@ with tab_diff:
 
             brfig = go.Figure()
             brfig.add_trace(go.Histogram(
-                x=_mc_br * 100, name="MC", opacity=0.68,
+                x=_mc_br * 100, name="MC", opacity=0.58,
+                histnorm="probability density",
                 marker=dict(
-                    color=hex_rgba(C["blue"], 0.68),
-                    line=dict(color=hex_rgba(C["blue"], 0.90), width=0.8),
+                    color=hex_rgba(C["blue"], 0.56),
+                    line=dict(color=hex_rgba(C["blue"], 0.95), width=1.4),
+                    pattern=dict(shape="/", solidity=0.16),
                 ),
                 xbins=dict(size=2),
             ))
             brfig.add_trace(go.Histogram(
-                x=_csdi_br * 100, name="CSDI", opacity=0.68,
+                x=_csdi_br * 100, name="CSDI", opacity=0.58,
+                histnorm="probability density",
                 marker=dict(
-                    color=hex_rgba(C["green"], 0.68),
-                    line=dict(color=hex_rgba(C["green"], 0.90), width=0.8),
+                    color=hex_rgba(C["green"], 0.56),
+                    line=dict(color=hex_rgba(C["green"], 0.95), width=1.4),
+                    pattern=dict(shape="\\", solidity=0.16),
                 ),
                 xbins=dict(size=2),
             ))
@@ -2064,14 +2357,14 @@ with tab_diff:
                 barmode="overlay",
                 height=280,
                 xaxis=dict(title="Blast rate (%)"),
-                yaxis=dict(title="Частота"),
+                yaxis=dict(title="Плотность"),
             )
             brfig.add_annotation(
                 text=f"KS={_ks_br:.3f}  p={_p_br:.3f}",
                 xref="paper", yref="paper", x=0.99, y=0.99,
                 showarrow=False, font=dict(size=10),
-                bgcolor="rgba(255,255,255,0.85)",
-                bordercolor="#ccc", borderwidth=1, borderpad=4,
+                bgcolor="rgba(244,247,250,0.90)",
+                bordercolor="rgba(115,132,145,0.28)", borderwidth=1, borderpad=4,
             )
             brfig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
             brfig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
@@ -2093,10 +2386,10 @@ with tab_diff:
                 f"{_p_gb:.4f}", f"{_p_br:.4f}"
             ],
             "Вывод": [
-                "✅ схожи" if _p_bl    > 0.05 else "⚠️ различны",
-                "✅ схожи" if _p_tgbdr > 0.05 else "⚠️ различны",
-                "✅ схожи" if _p_gb    > 0.05 else "⚠️ различны",
-                "✅ схожи" if _p_br    > 0.05 else "⚠️ различны",
+                "схожи" if _p_bl    > 0.05 else "различны",
+                "схожи" if _p_tgbdr > 0.05 else "различны",
+                "схожи" if _p_gb    > 0.05 else "различны",
+                "схожи" if _p_br    > 0.05 else "различны",
             ],
         }
         st.dataframe(_ks_table, use_container_width=True, hide_index=True)
@@ -2109,22 +2402,37 @@ with tab_diff:
 
         if _n_pass >= 2:
             _box_class = "diff-box"
-            _icon = "✅"
+            _icon = ""
             _verdict = "подтверждает"
             _color_word = "сходство"
         else:
             _box_class = "diff-warn"
-            _icon = "⚠️"
+            _icon = ""
             _verdict = "не подтверждает"
             _color_word = "расхождение"
 
-        st.markdown(f"""
+        _ks_html = (
+            f"<b>{_icon} Интерпретация верификации</b><br>"
+            f"CSDI Hybrid v3 (1000 траекторий, DDIM 50 шагов) генерирует "
+            f"эмбриологический каскад без параметрических допущений MC-пайплайна.<br>"
+            f"KS-тест <b>{_verdict}</b> статистическое {_color_word} "
+            f"финальных распределений: {_n_pass}/4 переменных прошли порог p&nbsp;>&nbsp;0.05.<br>"
+            f"<b>Примечание:</b> CSDI предсказывает P(беременность) = <b>{_p_csdi*100:.1f}%</b> "
+            f"через калиброванный LightGBM (ECE ≈ 0.03), порог {_opt_thr:.2f}. "
+            f"Различия промежуточных переменных при совпадении целевых "
+            f"соответствуют принципу <i>equifinality</i> и подтверждают "
+            f"архитектуру MC-пайплайна."
+        )
+        if _UI_OK:
+            UI.result_box(_ks_html, kind="success" if _n_pass >= 2 else "warning")
+        else:
+            st.markdown(f"""
         <div class="{_box_class}">
-        <b>{_icon} Интерпретация верификации</b><br><br>
+        <b>{_icon} Интерпретация верификации</b><br>
         CSDI Hybrid v3 (1000 траекторий, DDIM 50 шагов) генерирует
-        эмбриологический каскад без параметрических допущений MC-пайплайна.<br><br>
+        эмбриологический каскад без параметрических допущений MC-пайплайна.<br>
         KS-тест <b>{_verdict}</b> статистическое {_color_word}
-        финальных распределений: {_n_pass}/4 переменных прошли порог p&nbsp;>&nbsp;0.05.<br><br>
+        финальных распределений: {_n_pass}/4 переменных прошли порог p&nbsp;>&nbsp;0.05.<br>
         <b>Примечание:</b> CSDI предсказывает P(беременность) = <b>{_p_csdi*100:.1f}%</b>
         через калиброванный LightGBM (ECE ≈ 0.03), порог {_opt_thr:.2f}.
         Различия промежуточных переменных при совпадении целевых
@@ -2153,7 +2461,7 @@ with tab_diff:
             st.dataframe(_pi_table, use_container_width=True, hide_index=True)
 
         # ── Параметры условия ─────────────────────────────────
-        with st.expander("🔧 Параметры CSDI-условия (conditioning)"):
+        with st.expander("Параметры CSDI-условия (conditioning)"):
             st.markdown(f"""
             CSDI-модель обусловлена на upstream-результатах MC:
 
@@ -2172,15 +2480,17 @@ with tab_diff:
 
 # ── TAB 8: GAT Graph ──────────────────────────────────────────
 with tab_gat:
-    st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">🕸️ Graph Attention Transformer — граф клинических соседей</p>', unsafe_allow_html=True)
+    if _UI_OK:
+        UI.tab_header_by_key("gat")
+    (UI.section_header if _UI_OK else lambda _t: st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">{_t}</p>', unsafe_allow_html=True))("Graph Attention Transformer — граф клинических соседей")
 
     if not _gnn_bundle.get('available'):
         _err = _gnn_bundle.get('error', 'Модель не загружена')
-        st.info(f"ℹ️ GNN модель недоступна: {_err}\n\n"
+        st.info(f"GNN модель недоступна: {_err}\n\n"
                 f"Поместите `gnn_ivf_model.pt` в папку `models/` и перезапустите приложение.")
 
     elif _p_gnn_raw is None:
-        st.info("▶ Нажмите **Запустить расчёт** чтобы получить предсказание Graph Transformer.")
+        st.info("Нажмите **Запустить расчёт** чтобы получить предсказание Graph Transformer.")
 
     else:
         # ── Метрики ───────────────────────────────────────────
@@ -2231,19 +2541,19 @@ with tab_gat:
                 st.error(f"Ошибка построения графа: {_gnn_fig_err}")
 
         # ── Пояснение ─────────────────────────────────────────
-        with st.expander("ℹ️ Как читать этот график"):
+        with st.expander("Как читать этот график"):
             st.markdown(f"""
 **Левая панель — сетевой граф:**
-- ⭐ **Звезда** в центре — текущая пациентка
-- ⚫ **Круги** — 10 клинически наиболее похожих пациентов из обучающей когорты
-- **Цвет** узла: 🟢 зелёный = высокая GNN-вероятность, 🔴 красный = низкая
+- **Звезда** в центре — текущая пациентка
+- **Круги** — 10 клинически наиболее похожих пациентов из обучающей когорты
+- **Цвет** узла: зелёный = высокая GNN-вероятность, красный = низкая
 - **Размер** узла и **толщина** ребра ∝ косинусное сходство профилей
 - Сходство вычисляется по клиническим показателям: возраст, ОКК, бластоцисты,
   частоты оплодотворения / бластуляции и др. *(без учёта KAT-скора)*
 
 **Правая панель — распределение GNN-вероятностей соседей:**
 - Каждый бар = один сосед, отсортированы по вероятности
-- 🔵 Пунктирная линия = вероятность **текущей пациентки** по Graph Transformer
+- Пунктирная линия = вероятность **текущей пациентки** по Graph Transformer
 - Серая линия = медиана вероятностей среди соседей
 
 **Интерпретация:**
@@ -2256,7 +2566,7 @@ with tab_gat:
             """)
 
         # ── Технические детали (для исследователя) ───────────
-        with st.expander("🔧 Технические параметры модели"):
+        with st.expander("Технические параметры модели"):
             _cfg = _gnn_bundle.get('cfg', {})
             _n_train = (len(_gnn_bundle['train_X_scaled'])
                         if _gnn_bundle.get('train_X_scaled') is not None else '—')
@@ -2302,13 +2612,14 @@ with tab_befe:
                 csdi_result = st.session_state.get("csdi_result"),
                 age=float(age), amh=float(amh), afc=int(afc), bmi=float(bmi),
                 ood_stats   = st.session_state.get("_befe_ood_stats"),
+                tau_kat_override = st.session_state.get("_befe_tau_kat_dyn"),
             )
             st.session_state['_pdf_befe'] = _befe_res
             render_befe_tab(_befe_res, _befe_map)
         except Exception as _befe_exc:
             st.error(f"Ошибка отображения BEFE: {_befe_exc}")
 
-st.header("📄 Экспорт отчёта")
+st.header("Экспорт отчёта")
 
 with st.expander("Сформировать PDF-отчёт для пациентки", expanded=False):
     col_pdf1, col_pdf2 = st.columns([2, 1])
@@ -2325,7 +2636,7 @@ with st.expander("Сформировать PDF-отчёт для пациент�
     with col_pdf2:
         st.markdown("<br>", unsafe_allow_html=True)
         gen_pdf_btn = st.button(
-            "📄 Сформировать PDF",
+            "Сформировать PDF",
             use_container_width=True,
             type="primary",
             disabled=not _PDF_OK,
@@ -2378,6 +2689,7 @@ with st.expander("Сформировать PDF-отчёт для пациент�
                             age=float(age), amh=float(amh),
                             afc=int(afc), bmi=float(bmi),
                             ood_stats   = _ss.get("_befe_ood_stats"),
+                            tau_kat_override = _ss.get("_befe_tau_kat_dyn"),
                         )
                     except Exception:
                         _befe_pdf = _ss.get("_pdf_befe")
@@ -2419,7 +2731,7 @@ with st.expander("Сформировать PDF-отчёт для пациент�
                 )
 
                 _fname = f"IVF_Report_{(pdf_patient_id or 'patient').replace(' ','_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
-                st.success(f"✅ PDF готов — {len(_pdf_bytes)//1024} КБ")
+                st.success(f"PDF готов — {len(_pdf_bytes)//1024} КБ")
 
                 # ── DT Analytics: пишем строку только вместе с PDF ──────
                 _analytics_record_id = _save_analytics(
@@ -2439,7 +2751,7 @@ with st.expander("Сформировать PDF-отчёт для пациент�
                     csdi_result  = _ss.get("csdi_result"),
                 )
                 if _analytics_record_id:
-                    st.caption(f"📊 Аналитика сохранена · ID записи: `{_analytics_record_id}`")
+                    st.caption(f"Аналитика сохранена · ID записи: `{_analytics_record_id}`")
                 # ────────────────────────────────────────────────────────
 
                 st.download_button(

@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IVF Digital Twin — System Overview v7.0</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;1,400&family=Inter:wght@400;500;600&display=swap');
+
+  :root {
+    --serif:   'Playfair Display', Georgia, serif;
+    --sans:    'Inter', Helvetica, Arial, sans-serif;
+    --text:    #1a1a18;
+    --muted:   #5a5a56;
+    --faint:   #8a8a84;
+    --border:  #d4d2cc;
+    --surface: #f6f5f2;
+    --blue:    #185FA5;
+    --teal:    #0F6E56;
+    --purple:  #534AB7;
+    --amber:   #A0621A;
+    --accent:  #378ADD;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: var(--serif);
+    color: var(--text);
+    background: #fff;
+    line-height: 1;
+  }
+
+  .page {
+    max-width: 840px;
+    margin: 0 auto;
+    padding: 56px 56px 80px;
+  }
+
+  .top-rule { height: 2px; background: var(--text); margin-bottom: 28px; }
+
+  /* ── Nav ── */
+  .nav-tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 42px;
+    border-bottom: 0.5px solid var(--border);
+  }
+  .nav-tab {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--faint);
+    padding: 10px 18px 10px 0;
+    text-decoration: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -0.5px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .nav-tab:hover  { color: var(--text); }
+  .nav-tab.active { color: var(--text); border-bottom-color: var(--text); }
+
+  /* ── Masthead ── */
+  .kicker {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--faint);
+    font-weight: 500;
+    margin-bottom: 14px;
+  }
+  h1 {
+    font-size: 46px;
+    line-height: 1.1;
+    font-weight: 400;
+    margin-bottom: 14px;
+    letter-spacing: -.01em;
+  }
+  h1 sup {
+    font-size: 18px;
+    font-family: var(--sans);
+    font-weight: 500;
+    color: var(--muted);
+    vertical-align: top;
+    margin-top: 10px;
+    display: inline-block;
+  }
+  .deck {
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.72;
+    color: var(--muted);
+    max-width: 580px;
+    margin-bottom: 32px;
+  }
+
+  hr.mid { height: 0.5px; background: var(--border); border: none; margin: 0; }
+
+  .pull {
+    font-size: 19px;
+    line-height: 1.78;
+    color: var(--text);
+    border-left: 3px solid var(--accent);
+    padding: 2px 0 2px 22px;
+    margin: 38px 0;
+  }
+
+  /* ── Section heading ── */
+  .sec-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin: 48px 0 24px;
+  }
+  .sec-head span {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--faint);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .sec-head hr { flex: 1; height: 0.5px; border: none; background: var(--border); }
+
+  /* ── Prose ── */
+  .prose p {
+    font-size: 15.5px;
+    line-height: 1.84;
+    color: var(--muted);
+    margin-bottom: 18px;
+  }
+  .prose p:last-child { margin-bottom: 0; }
+
+  /* ── Stats ── */
+  .nums {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin: 36px 0;
+  }
+  .nm {
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 20px;
+  }
+  .nv {
+    font-size: 28px;
+    font-weight: 400;
+    font-family: var(--serif);
+    color: var(--text);
+    line-height: 1;
+  }
+  .nl {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    color: var(--faint);
+    margin-top: 7px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+  }
+
+  /* ── Steps ── */
+  .steps { margin: 28px 0 40px; }
+  .tier-label {
+    font-family: var(--sans);
+    font-size: 9.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    color: var(--faint);
+    padding: 12px 0 6px;
+  }
+  .step {
+    display: grid;
+    grid-template-columns: 48px 1fr;
+    border: 0.5px solid var(--border);
+    border-bottom: none;
+  }
+  .step:first-of-type { border-radius: 10px 10px 0 0; }
+  .steps > .step:last-child { border-bottom: 0.5px solid var(--border); border-radius: 0 0 10px 10px; }
+  /* last step before a tier-label also needs bottom border closed by the next step */
+  .step-num {
+    background: var(--surface);
+    border-right: 0.5px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--faint);
+    letter-spacing: .04em;
+    min-height: 72px;
+  }
+  .step-body { padding: 18px 22px; background: var(--surface); }
+  .step-title {
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 6px;
+    line-height: 1.35;
+  }
+  .step-label {
+    font-family: var(--sans);
+    font-size: 9.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .09em;
+    margin-bottom: 5px;
+  }
+  .step-desc {
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+
+  /* tier colour on the number only */
+  .t-core   .step-num { color: var(--muted); }
+  .t-verify .step-num { color: var(--blue); }
+  .t-fusion .step-num { color: var(--text); }
+
+  /* step groups need connected borders */
+  .step-group { border: 0.5px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .step-group .step { border: none; border-bottom: 0.5px solid var(--border); }
+  .step-group .step:last-child { border-bottom: none; }
+
+  /* ── Capability grid ── */
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 26px 0 38px;
+  }
+  .card {
+    background: var(--surface);
+    border-radius: 10px;
+    padding: 22px 22px;
+    border: 0.5px solid var(--border);
+  }
+  .ct {
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 9px;
+  }
+  .cb {
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.72;
+  }
+  .cicon {
+    display: block;
+    width: 18px;
+    height: 18px;
+    color: var(--faint);
+    margin-bottom: 14px;
+  }
+
+  /* ── Confidence block ── */
+  .conf-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 26px 0 32px;
+  }
+  .conf-card {
+    background: var(--surface);
+    border-radius: 10px;
+    padding: 22px 22px;
+    border: 0.5px solid var(--border);
+  }
+  .conf-card.full { grid-column: 1 / -1; }
+  .conf-head {
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 12px;
+  }
+  .conf-body {
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.74;
+  }
+
+  /* ── Reliability segments (text labels stay coloured, bg neutral) ── */
+  .rel-row {
+    display: flex;
+    gap: 0;
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 14px 0 14px;
+  }
+  .rel-seg {
+    flex: 1;
+    padding: 12px 14px;
+    border-right: 0.5px solid var(--border);
+    background: var(--surface);
+  }
+  .rel-seg:last-child { border-right: none; }
+  .rel-seg-label {
+    font-family: var(--sans);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    margin-bottom: 5px;
+  }
+  .lbl-low  { color: #a0402a; }
+  .lbl-mod  { color: #8a6f10; }
+  .lbl-high { color: var(--teal); }
+  .rel-seg-note {
+    font-family: var(--sans);
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.55;
+  }
+
+  /* ── OOD pair ── */
+  .ood-pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin: 14px 0 0;
+  }
+  .ood-cell {
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    background: var(--surface);
+  }
+  .ood-lbl {
+    font-family: var(--sans);
+    font-size: 9.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    color: var(--faint);
+    margin-bottom: 6px;
+  }
+  .ood-val {
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .ood-sub {
+    font-family: var(--sans);
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.55;
+  }
+
+  /* ── Info banner (accent left-border only, surface bg) ── */
+  .banner {
+    border: 0.5px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    padding: 20px 24px;
+    background: var(--surface);
+    margin: 28px 0;
+    display: flex;
+    gap: 18px;
+    align-items: flex-start;
+  }
+  .banner svg { flex-shrink: 0; width: 22px; height: 22px; color: var(--faint); margin-top: 1px; }
+  .banner-body { flex: 1; }
+  .banner-title {
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 7px;
+  }
+  .banner-text {
+    font-family: var(--sans);
+    font-size: 12.5px;
+    color: var(--muted);
+    line-height: 1.72;
+  }
+
+  /* ── Comparison table ── */
+  .dt-wrap {
+    margin: 24px 0 38px;
+    border: 0.5px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .dt-wrap table { width: 100%; border-collapse: collapse; }
+  .dt-wrap thead th {
+    font-family: var(--sans);
+    font-size: 9.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    color: var(--faint);
+    padding: 12px 16px;
+    text-align: left;
+    background: var(--surface);
+    border-bottom: 0.5px solid var(--border);
+  }
+  .dt-wrap thead th:not(:last-child) { border-right: 0.5px solid var(--border); }
+  .dt-wrap thead th.hl { color: var(--blue); }
+  .dt-wrap tbody td {
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--muted);
+    padding: 10px 16px;
+    border-bottom: 0.5px solid var(--border);
+    vertical-align: middle;
+    line-height: 1.45;
+  }
+  .dt-wrap tbody td:not(:last-child) { border-right: 0.5px solid var(--border); }
+  .dt-wrap tbody tr:last-child td { border-bottom: none; }
+  .dt-wrap tbody tr:hover td { background: #fcfbf8; }
+  td.feature-col { font-weight: 500; color: var(--text); }
+  .check-yes     { color: var(--teal); font-weight: 600; font-size: 13px; }
+  .check-no      { color: var(--faint); font-size: 13px; }
+  .check-partial { color: var(--amber); font-size: 11px; }
+
+  /* ── Footer ── */
+  .footer {
+    border-top: 0.5px solid var(--border);
+    padding-top: 26px;
+    margin-top: 56px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+  .fl-note {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    color: var(--faint);
+    line-height: 1.8;
+  }
+  .tag-row { display: flex; gap: 7px; flex-wrap: wrap; }
+  .tag {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    padding: 4px 10px;
+    border-radius: 5px;
+    border: 0.5px solid var(--border);
+    color: var(--muted);
+    background: transparent;
+  }
+
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .page { padding: 32px 44px 48px; max-width: 100%; }
+    h1 { font-size: 38px; }
+    .pull { font-size: 17px; }
+    .nav-tabs { display: none; }
+    .nums { grid-template-columns: repeat(4, 1fr); }
+  }
+  @media (max-width: 680px) {
+    .page { padding: 32px 24px 48px; }
+    h1 { font-size: 32px; }
+    .nums { grid-template-columns: 1fr 1fr; }
+    .grid { grid-template-columns: 1fr; }
+    .conf-grid { grid-template-columns: 1fr; }
+    .conf-card.full { grid-column: 1; }
+    .ood-pair { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="top-rule"></div>
+
+  <p class="kicker">Clinical decision support &middot; IVF &middot; Adaptive probabilistic modelling</p>
+  <h1>IVF Digital Twin <sup>v7.0</sup></h1>
+  <p class="deck">A continuously updated probabilistic model of the individual IVF cycle &mdash; from ovarian stimulation through blastocyst formation and embryo transfer &mdash; that evolves with each new clinical observation and scores its own confidence.</p>
+
+  <hr class="mid">
+
+  <nav class="nav-tabs">
+    <a class="nav-tab active" href="#problem">The problem</a>
+    <a class="nav-tab" href="#how">How it works</a>
+    <a class="nav-tab" href="#confidence">Confidence</a>
+    <a class="nav-tab" href="#outputs">What you get</a>
+    <a class="nav-tab" href="#comparison">Comparison</a>
+  </nav>
+
+  <p class="pull">Every IVF cycle is a sequence of biological events, each introducing its own uncertainty. The IVF Digital Twin does not give a single number &mdash; it gives a complete picture of realistic possibilities, updated in real time as the cycle unfolds.</p>
+
+  <!-- ── PROBLEM ── -->
+  <div class="sec-head" id="problem"><span>The clinical problem</span><hr></div>
+
+  <div class="prose">
+    <p>When counselling an IVF patient, the question is rarely just &ldquo;what is the success rate?&rdquo; It is: how variable is this prognosis? Could this patient end up with no transferable embryos, or is that risk genuinely small? How does this cycle compare to others we have seen? And as each day of culture brings new information, does the prognosis actually change?</p>
+    <p>Existing tools offer a single static estimate. They produce one number that does not update as embryological data accumulate, cannot reflect your laboratory&rsquo;s own performance level, and have no way to express whether a &ldquo;two blastocyst&rdquo; prediction is reliable or highly uncertain. Two patients can share the same expected outcome but differ fundamentally in how predictable that outcome is &mdash; and current calculators cannot capture this distinction.</p>
+    <p>The IVF Digital Twin was built for exactly this purpose. It models each cycle as it unfolds, maintaining a full range of possible outcomes that narrows with each new observation. It integrates your laboratory&rsquo;s own quality composite into every prediction. And in version 7.0, it scores its own confidence &mdash; telling the clinician not only what it predicts, but how much to trust that prediction for this particular patient.</p>
+  </div>
+
+  <div class="nums">
+    <div class="nm"><div class="nv">15,193</div><div class="nl">IVF cycles &middot; training data</div></div>
+    <div class="nm"><div class="nv">5,000</div><div class="nl">simulated scenarios per cycle</div></div>
+    <div class="nm"><div class="nv">7</div><div class="nl">independent analysis layers</div></div>
+    <div class="nm"><div class="nv">16,000</div><div class="nl">real protocols &middot; similarity matching</div></div>
+  </div>
+
+  <!-- ── HOW IT WORKS ── -->
+  <div class="sec-head" id="how"><span>How it works</span><hr></div>
+
+  <div class="prose" style="margin-bottom:24px">
+    <p>The system analyses each cycle through seven independent layers, then formally combines their conclusions into a single probability estimate. No single method dominates &mdash; each contributes a different perspective, and the final answer reflects how well they agree. When the methods converge, confidence is high. When they diverge, that divergence is itself clinically informative.</p>
+  </div>
+
+  <div class="steps">
+
+    <div class="tier-label">Prediction tier</div>
+    <div class="step-group">
+      <div class="step t-core">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <div class="step-label" style="color:var(--muted)">Biological cascade simulation</div>
+          <div class="step-title">5,000 versions of this cycle</div>
+          <div class="step-desc">The system runs 5,000 simulated versions of the cycle, each following a slightly different probabilistic path through retrieval, fertilisation, blastocyst development, and implantation. The result is a full distribution of possible outcomes &mdash; not a single number but a realistic range, including the probability of poor response and empty cycles.</div>
+        </div>
+      </div>
+      <div class="step t-core">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <div class="step-label" style="color:var(--muted)">Ensemble pregnancy scoring</div>
+          <div class="step-title">Two validated models, combined</div>
+          <div class="step-desc">Two clinically validated pregnancy prediction models are combined: one based on patient characteristics, one on laboratory performance. Together they produce a per-transfer probability, a cumulative probability across viable embryos, and an overall cycle probability.</div>
+        </div>
+      </div>
+      <div class="step t-core">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <div class="step-label" style="color:var(--muted)">Neural network with real-time updating</div>
+          <div class="step-title">Pattern recognition, anchored to your clinic</div>
+          <div class="step-desc">A neural network ensemble recognises complex patterns between patient parameters and outcomes. Its estimate is anchored to your clinic&rsquo;s own historical data via Bayesian updating, and re-conditions itself at each new stage &mdash; oocyte count, fertilisation result, blastocyst formation &mdash; as data arrive.</div>
+        </div>
+      </div>
+      <div class="step t-core">
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <div class="step-label" style="color:var(--muted)">Patient phenotype classification</div>
+          <div class="step-title">Where this patient fits in the population</div>
+          <div class="step-desc">The patient is matched to one of three clinically defined IVF response phenotypes &mdash; Poor, Standard, or High responder &mdash; based on eighteen clinical and laboratory parameters. This positions the current patient within a reference cohort and provides immediate context for the predicted outcome range.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tier-label">Verification tier</div>
+    <div class="step-group">
+      <div class="step t-verify">
+        <div class="step-num">5</div>
+        <div class="step-body">
+          <div class="step-label" style="color:var(--blue)">Independent generative verification</div>
+          <div class="step-title">A second, independent opinion on embryology</div>
+          <div class="step-desc">A generative AI model (trained on 15,193 cycles) independently reconstructs the expected embryological outcome distribution using a completely different method, without using the simulation&rsquo;s biological rate assumptions. When this independent model and the simulation agree, convergence provides additional confidence. When they diverge, the system flags this and uses the degree of divergence to adjust the weight placed on the simulation.</div>
+        </div>
+      </div>
+      <div class="step t-verify">
+        <div class="step-num">6</div>
+        <div class="step-body">
+          <div class="step-label" style="color:var(--blue)">Patient-similarity reasoning</div>
+          <div class="step-title">Real historical patients, not statistical abstractions</div>
+          <div class="step-desc">A graph-based model draws on 16,000 real clinical IVF protocols to find the patients whose profiles most closely resemble the current patient. It identifies the ten most similar historical cases with their documented outcomes &mdash; a direct, intuitive answer to the question every clinician implicitly asks: <em>&ldquo;I have seen patients like this. What happened to them?&rdquo;</em></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tier-label">Synthesis tier</div>
+    <div class="step-group">
+      <div class="step t-fusion">
+        <div class="step-num">7</div>
+        <div class="step-body">
+          <div class="step-label" style="color:var(--text)">Bayesian evidence fusion</div>
+          <div class="step-title">One final answer, with a confidence score</div>
+          <div class="step-desc">All six preceding analyses are formally combined into a single posterior probability, with each source weighted by its calibration quality and the current level of agreement between models. The simulation provides a mechanistic starting point; the AI models provide empirical evidence. The final output includes a probability, a 95% uncertainty range, and a 0&ndash;100 reliability score.</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── CONFIDENCE ── -->
+  <div class="sec-head" id="confidence"><span>Prediction confidence</span><hr></div>
+
+  <div class="prose">
+    <p>Version 7.0 introduces a formal answer to the question every clinician implicitly asks: how much should I trust this prediction for this specific patient? The system scores its own reliability on a 0&ndash;100 scale and separately flags when a patient lies outside the population on which it was trained &mdash; distinguishing, for example, a patient who is clinically unusual but has entirely typical embryological results from one where it is the laboratory picture that is atypical. When methods agree, confidence is high; when they diverge, the score falls and that divergence is itself reported as clinically meaningful information.</p>
+  </div>
+
+  <!-- ── OUTPUTS ── -->
+  <div class="sec-head" id="outputs"><span>What the clinician receives</span><hr></div>
+
+  <div class="grid">
+    <div class="card">
+      <svg class="cicon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="1,13 5,8 9,10 13,4 17,7"/><line x1="1" y1="17" x2="17" y2="17"/></svg>
+      <div class="ct">A range, not a number</div>
+      <div class="cb">Full outcome distributions for oocyte yield, blastocyst count, and pregnancy likelihood. The system shows not just the most likely result but the complete realistic range &mdash; including the probability of both best- and worst-case outcomes for this specific patient and laboratory.</div>
+    </div>
+    <div class="card">
+      <svg class="cicon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M16 9a7 7 0 1 1-1.5-4.4"/><polyline points="16,1 16,6 11,6"/></svg>
+      <div class="ct">A prediction that evolves</div>
+      <div class="cb">Every new embryological result triggers a full update. The prediction after retrieval differs from the prediction after fertilisation, which differs again after blastocyst culture. Uncertainty narrows progressively, and the reliability score updates with each new observation.</div>
+    </div>
+    <div class="card">
+      <svg class="cicon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="6" r="3"/><path d="M1 17c0-3.3 2.7-6 6-6"/><circle cx="13" cy="6" r="2.2"/><path d="M13 12c2.2 0 4 1.8 4 4"/></svg>
+      <div class="ct">Real patients, not abstractions</div>
+      <div class="cb">The system identifies ten real historical patients whose clinical profiles most closely resemble the current patient, with their documented outcomes. A concrete answer to the question: <em>&ldquo;Among patients like this one, what happened?&rdquo;</em></div>
+    </div>
+    <div class="card">
+      <svg class="cicon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L2 4.5v5c0 4 3.1 7.5 7 8.5 3.9-1 7-4.5 7-8.5v-5L9 1.5z"/><polyline points="6,9 8,11 12,7"/></svg>
+      <div class="ct">Guaranteed uncertainty intervals</div>
+      <div class="cb">Blastocyst count prediction intervals carry a mathematical guarantee: 90% of real outcomes fall within the stated range, without any assumption about the underlying biology. This interval can be communicated to patients with a defined level of statistical confidence.</div>
+    </div>
+    <div class="card">
+      <svg class="cicon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="14" height="13" rx="2"/><line x1="2" y1="7" x2="16" y2="7"/><line x1="6" y1="1" x2="6" y2="5"/><line x1="12" y1="1" x2="12" y2="5"/></svg>
+      <div class="ct">Embryo banking planning</div>
+      <div class="cb">For patients considering embryo accumulation, the system estimates how many stimulation cycles are likely needed to reach a banking target with 80% or 90% confidence, accounting for the individual response profile and the laboratory&rsquo;s own performance level.</div>
+    </div>
+    <div class="card">
+      <svg class="cicon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="14" height="14" rx="2"/><line x1="6" y1="2" x2="6" y2="16"/><line x1="2" y1="7" x2="16" y2="7"/><line x1="2" y1="12" x2="6" y2="12"/></svg>
+      <div class="ct">Structured clinical report</div>
+      <div class="cb">An exportable PDF report suitable for counselling and documentation, compiling all layer outputs, the confidence score, risk flags, phenotype classification, and the similar-patient display into a single readable summary.</div>
+    </div>
+  </div>
+
+  <div class="banner">
+    <svg viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="9.5"/>
+      <path d="M7.5 11l2.5 2.5 5-5"/>
+    </svg>
+    <div class="banner-body">
+      <div class="banner-title">Laboratory quality is built in to every prediction</div>
+      <div class="banner-text">Every prediction integrates a laboratory performance composite derived from oocyte yield efficiency, fertilisation rate, and blastocyst conversion relative to expected values. Two patients with identical clinical profiles treated in laboratories of different performance levels will receive different prognoses &mdash; because the laboratory is part of the outcome.</div>
+    </div>
+  </div>
+
+  <!-- ── COMPARISON ── -->
+  <div class="sec-head" id="comparison"><span>How it differs from existing tools</span><hr></div>
+
+  <div class="dt-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Capability</th>
+          <th>Existing tools</th>
+          <th class="hl">Digital Twin v7.0</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="feature-col">Prediction updates as the cycle progresses</td>
+          <td><span class="check-no">&mdash;</span> &nbsp;Static, one-time estimate</td>
+          <td><span class="check-yes">&#10003;</span> &nbsp;Updates at each stage</td>
+        </tr>
+        <tr>
+          <td class="feature-col">Full outcome range, not a single number</td>
+          <td><span class="check-no">&mdash;</span></td>
+          <td><span class="check-yes">&#10003;</span></td>
+        </tr>
+        <tr>
+          <td class="feature-col">Laboratory performance integrated into prediction</td>
+          <td><span class="check-no">&mdash;</span></td>
+          <td><span class="check-yes">&#10003;</span></td>
+        </tr>
+        <tr>
+          <td class="feature-col">Shows real similar historical patients with outcomes</td>
+          <td><span class="check-no">&mdash;</span></td>
+          <td><span class="check-yes">&#10003;</span></td>
+        </tr>
+        <tr>
+          <td class="feature-col">Scores its own prediction reliability (0&ndash;100)</td>
+          <td><span class="check-no">&mdash;</span></td>
+          <td><span class="check-yes">&#10003;</span></td>
+        </tr>
+        <tr>
+          <td class="feature-col">Flags when a patient is outside the training population</td>
+          <td><span class="check-no">&mdash;</span></td>
+          <td><span class="check-yes">&#10003;</span></td>
+        </tr>
+        <tr>
+          <td class="feature-col">OHSS and empty-cycle risk quantification</td>
+          <td><span class="check-no">&mdash;</span></td>
+          <td><span class="check-yes">&#10003;</span></td>
+        </tr>
+        <tr>
+          <td class="feature-col">Embryo banking cycle planning</td>
+          <td><span class="check-no">&mdash;</span></td>
+          <td><span class="check-yes">&#10003;</span></td>
+        </tr>
+        <tr>
+          <td class="feature-col">Mathematically guaranteed uncertainty intervals</td>
+          <td><span class="check-partial">Partial</span></td>
+          <td><span class="check-yes">&#10003;</span></td>
+        </tr>
+        <tr>
+          <td class="feature-col">Requires only routine clinical data</td>
+          <td><span class="check-partial">Varies</span></td>
+          <td><span class="check-yes">&#10003;</span></td>
+        </tr>
+        <tr>
+          <td class="feature-col">PDF report for patient counselling</td>
+          <td><span class="check-no">&mdash;</span></td>
+          <td><span class="check-yes">&#10003;</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="sec-head"><span>Designed for clinical use</span><hr></div>
+
+  <div class="prose">
+    <p>The IVF Digital Twin requires only the data already collected as part of routine IVF care. No additional investigations, specialised imaging, or genetic testing are needed. The platform works in any IVF setting that maintains standard embryological documentation, including settings without time-lapse incubation or preimplantation genetic testing.</p>
+    <p>Every prediction can be traced to a specific stage of the embryological cascade. A physician can explain to a patient why the predicted blastocyst range is wide, why the confidence score is moderate, or why the prognosis shifted after a strong fertilisation result &mdash; because the system makes these relationships visible and quantified. This distinguishes the IVF Digital Twin from approaches that produce accurate outputs but offer no insight into the reasoning behind them.</p>
+    <p>The system is designed to support clinical judgement, not replace it. It does not make treatment decisions, prescribe protocols, or interpret imaging. Its role is to give physicians and embryologists a structured, continuously updated, and confidence-scored quantification of the outcome probabilities already implicit in the clinical data they collect &mdash; in a form suitable for both clinical decision-making and meaningful patient communication.</p>
+  </div>
+
+  <div class="footer">
+    <div class="fl-note">
+      IVF Digital Twin v7.0 &middot; Sergeev et al., 2025<br>
+      embryossa@gmail.com &middot; Research prototype &mdash; not for standalone clinical use
+    </div>
+    <div class="tag-row">
+      <span class="tag">Dynamic probability</span>
+      <span class="tag">Seven-layer AI</span>
+      <span class="tag">Bayesian fusion</span>
+      <span class="tag">Conformal intervals</span>
+      <span class="tag">Patient similarity</span>
+      <span class="tag">Reliability scoring</span>
+      <span class="tag">Laboratory integration</span>
+    </div>
+  </div>
+
+</div>
+<script>
+  document.querySelectorAll('.nav-tab').forEach(function(t){
+    t.addEventListener('click', function(e){
+      var h = this.getAttribute('href');
+      if(h && h[0]==='#'){
+        e.preventDefault();
+        var el = document.querySelector(h);
+        if(el) el.scrollIntoView({behavior:'smooth',block:'start'});
+        document.querySelectorAll('.nav-tab').forEach(function(x){ x.classList.remove('active'); });
+        this.classList.add('active');
+      }
+    });
+  });
+  var ids=['problem','how','confidence','outputs','comparison'];
+  window.addEventListener('scroll',function(){
+    var y=window.scrollY+120, cur=ids[0];
+    ids.forEach(function(id){ var el=document.getElementById(id); if(el&&el.offsetTop<=y) cur=id; });
+    document.querySelectorAll('.nav-tab').forEach(function(t){
+      t.classList.toggle('active', t.getAttribute('href')==='#'+cur);
+    });
+  },{passive:true});
+</script>
+</body>
+</html>
