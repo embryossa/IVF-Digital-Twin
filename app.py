@@ -792,6 +792,15 @@ st.sidebar.title("IVF Digital Twin v7.0")
 st.sidebar.caption("from in vitro to in silico")
 st.sidebar.markdown("---")
 
+# ── Краткий отчёт для пациента (модуль patient_brief.py, опционально) ──────
+_BRIEF_AVAILABLE = os.path.exists(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "patient_brief.py")
+)
+if _BRIEF_AVAILABLE:
+    # Краткий режим — по умолчанию. Расширенный включается кнопкой в отчёте.
+    if "_view_mode" not in st.session_state:
+        st.session_state["_view_mode"] = "Краткий (для пациента)"
+
 st.sidebar.header("Параметры пациентки")
 age  = st.sidebar.number_input("Возраст (лет)", 18, 50, 35, 1)
 amh  = st.sidebar.number_input("АМГ (нг/мл)", 0.01, 15.0, 2.50, 0.10,
@@ -1369,6 +1378,29 @@ if _BEFE_OK:
         _befe_res, _befe_map = None, {}
 st.session_state['_pdf_befe'] = _befe_res
 
+# ── Краткий отчёт для пациента: рисуем вместо полных вкладок и выходим ──────
+if st.session_state.get("_view_mode", "").startswith("Краткий"):
+    _brief_ok = False
+    try:
+        import patient_brief
+        patient_brief.render(globals())
+        _brief_ok = True
+    except Exception as _brief_exc:
+        st.warning(
+            f"Краткий отчёт недоступен, показан полный интерфейс: {_brief_exc}"
+        )
+    if _brief_ok:
+        st.stop()
+
+# ── Кнопка возврата к краткому отчёту (расширенный режим) ───────────────────
+if _BRIEF_AVAILABLE and not st.session_state.get("_view_mode", "").startswith("Краткий"):
+    _col_back, _ = st.columns([2, 8])
+    with _col_back:
+        if st.button("← Краткий отчёт", key="_to_brief_report",
+                     help="Вернуться к краткому отчёту для пациента"):
+            st.session_state["_view_mode"] = "Краткий (для пациента)"
+            st.rerun()
+
 # ── Визуальный summary результатов: L7 posterior как главная цифра ─────────
 _kat_display = f"{_p_kat_raw*100:.1f}%" if _p_kat_raw is not None else "—"
 if _p_gnn_ens is not None:
@@ -1423,9 +1455,9 @@ if p_cancel > 0.05:
                f"**{p_cancel*100:.1f}%**")
 
 # ── Вкладки ───────────────────────────────────────────────────
-tab_pipeline, tab_preg, tab_risk, tab_bank, tab_trp, tab_cluster, tab_diff, tab_gat, tab_befe = st.tabs(
+tab_pipeline, tab_preg, tab_risk, tab_bank, tab_trp, tab_cluster, tab_diff, tab_gat, tab_befe, tab_llm = st.tabs(
     ["L1 Pipeline", "L2 Беременность", "Риски", "Банкинг",
-     "TRP", "L4 Кластер", "L5 Diffusion", "L6 GAT Graph", "L7 BEFE"])
+     "TRP", "L4 Кластер", "L5 Diffusion", "L6 GAT Graph", "L7 BEFE", "LLM"])
 
 # ── TAB: Pipeline ─────────────────────────────────────────────
 with tab_pipeline:
@@ -2618,6 +2650,186 @@ with tab_befe:
             render_befe_tab(_befe_res, _befe_map)
         except Exception as _befe_exc:
             st.error(f"Ошибка отображения BEFE: {_befe_exc}")
+
+
+# ── TAB: LLM Консультант ──────────────────────────────────────────────────
+with tab_llm:
+    if _UI_OK:
+        UI.tab_header("LLM", "Консультант",
+                      "MedGemma · клинический нарратив · диалог", "")
+
+    # ── Загрузка модуля и проверка Ollama ─────────────────────────────────
+    _lc_ok   = False
+    _lc_err  = ""
+    _lc_live = False
+    try:
+        import llm_consultant as _LC
+        _lc_ok   = True
+        _lc_live = _LC.health_check()
+    except Exception as _lc_import_err:
+        _lc_err = str(_lc_import_err)
+
+    if not _lc_ok:
+        st.error(f"llm_consultant.py недоступен: {_lc_err}")
+        st.caption("Убедитесь, что файл находится рядом с app.py.")
+    else:
+        # Статус Ollama
+        if _lc_live:
+            st.success(f"Ollama доступна · {_LC.OLLAMA_HOST} · модель: {_LC.MEDGEMMA}")
+        else:
+            st.warning(
+                f"Ollama не отвечает на {_LC.OLLAMA_HOST}. "
+                "Запустите `ollama serve` и убедитесь, что модель загружена "
+                f"(`ollama pull {_LC.MEDGEMMA}`)."
+            )
+
+        st.divider()
+
+        # ── Настройки запроса ─────────────────────────────────────────────
+        _llm_col1, _llm_col2 = st.columns([3, 2])
+        with _llm_col1:
+            _llm_mode = st.radio(
+                "Режим анализа",
+                ["Клиническое резюме (Tier 0)",
+                 "Анализ ансамбля (Tier 1)"],
+                horizontal=True,
+                key="_llm_mode_radio",
+                help=(
+                    "Tier 0 — клинический нарратив: объяснение прогноза, "
+                    "сценарии цикла, банкинг, неопределённость.\n"
+                    "Tier 1 — матрица согласованности моделей, CSDI-якорь, "
+                    "GAT-соседи, ранг неопределённости."
+                ),
+            )
+        with _llm_col2:
+            _llm_tier = 0 if "Tier 0" in _llm_mode else 1
+            if _llm_tier == 0:
+                _llm_style = st.radio(
+                    "Стиль",
+                    ["narrative", "concise"],
+                    horizontal=True,
+                    key="_llm_style_radio",
+                    help="narrative — полный нарратив (~400 слов, медленнее); "
+                         "concise — краткий (~150 слов, быстро).",
+                )
+            else:
+                _llm_style = "concise"  # Tier 1 не использует style
+
+        # ── Выбор модели ──────────────────────────────────────────────────
+        _available_models = _LC.list_models()
+        if _available_models:
+            _default_model = (
+                _LC.MEDGEMMA if _LC.MEDGEMMA in _available_models
+                else _available_models[0]
+            )
+            _llm_model = st.selectbox(
+                "Модель Ollama",
+                _available_models,
+                index=_available_models.index(_default_model),
+                key="_llm_model_sel",
+                help=(
+                    "Выберите любую загруженную модель.\n"
+                    "medgemma1.5 — медицинская специализация.\n"
+                    "gemma4 / gemma3 — более свободный язык, лучший нарратив.\n"
+                    "Добавить модель: ollama pull <имя>"
+                ),
+            )
+        else:
+            _llm_model = _LC.MEDGEMMA
+            st.caption(f"Модель по умолчанию: `{_llm_model}`")
+
+        # ── Кнопки управления ─────────────────────────────────────────────
+        _btn_col1, _btn_col2, _btn_col3 = st.columns([2, 1, 1])
+        with _btn_col1:
+            _llm_start_btn = st.button(
+                "Запустить анализ",
+                key="_llm_start",
+                type="primary",
+                use_container_width=True,
+                disabled=not _lc_live,
+            )
+        with _btn_col2:
+            _llm_clear_btn = st.button(
+                "Очистить диалог",
+                key="_llm_clear",
+                use_container_width=True,
+            )
+        with _btn_col3:
+            _llm_np = _LC._STYLE_NUM_PREDICT.get(_llm_style, 1200)
+            _llm_to = _LC._TIMEOUT_READ
+            st.caption(
+                f"max_tokens: {_llm_np}\n"
+                f"timeout: {_llm_to} с"
+            )
+
+        # ── Инициализация состояния диалога ──────────────────────────────
+        if "_llm_chat" not in st.session_state:
+            st.session_state["_llm_chat"] = []   # [{"role","content"}, ...]
+        if "_llm_tier_used" not in st.session_state:
+            st.session_state["_llm_tier_used"] = 0
+
+        if _llm_clear_btn:
+            st.session_state["_llm_chat"] = []
+            st.rerun()
+
+        # ── Первый запуск: начальный анализ ───────────────────────────────
+        if _llm_start_btn:
+            st.session_state["_llm_chat"] = []   # сбрасываем при новом запуске
+            st.session_state["_llm_tier_used"] = _llm_tier
+            with st.chat_message("assistant", avatar="🤖"):
+                if _llm_tier == 0:
+                    _response = st.write_stream(
+                        _LC.consult_stream(
+                            globals(),
+                            style=_llm_style,
+                            model=_llm_model,
+                        )
+                    )
+                else:
+                    _response = st.write_stream(
+                        _LC.analyse_ensemble_stream(globals(), model=_llm_model)
+                    )
+            st.session_state["_llm_chat"].append(
+                {"role": "assistant", "content": _response}
+            )
+
+        # ── Отображение истории диалога ───────────────────────────────────
+        for _msg in st.session_state["_llm_chat"]:
+            _avatar = "🤖" if _msg["role"] == "assistant" else "👨‍⚕️"
+            with st.chat_message(_msg["role"], avatar=_avatar):
+                st.markdown(_msg["content"])
+
+        # ── Follow-up вопрос ─────────────────────────────────────────────
+        if st.session_state["_llm_chat"]:
+            _follow = st.chat_input(
+                "Уточняющий вопрос по результатам...",
+                key="_llm_follow",
+            )
+            if _follow and _lc_live:
+                # Показываем вопрос
+                with st.chat_message("user", avatar="👨‍⚕️"):
+                    st.markdown(_follow)
+                st.session_state["_llm_chat"].append(
+                    {"role": "user", "content": _follow}
+                )
+                # История без последнего user (он уже в messages в chat_stream)
+                _hist_for_llm = st.session_state["_llm_chat"][:-1]
+                # Стримим ответ
+                with st.chat_message("assistant", avatar="🤖"):
+                    _follow_resp = st.write_stream(
+                        _LC.chat_stream(
+                            globals(),
+                            history=_hist_for_llm,
+                            question=_follow,
+                            tier=st.session_state.get("_llm_tier_used", 0),
+                            style=_llm_style,
+                            model=_llm_model,
+                        )
+                    )
+                st.session_state["_llm_chat"].append(
+                    {"role": "assistant", "content": _follow_resp}
+                )
+
 
 st.header("Экспорт отчёта")
 
