@@ -1,48 +1,15 @@
 """
 llm_consultant.py — IVF Digital Twin v7.0
-═══════════════════════════════════════════════════════════════════════════
-Локальный LLM-слой консультанта поверх Digital Twin. Работает через Ollama
-на localhost — без выхода в интернет (offline-safe для клиник).
+LLM-слой консультанта поверх ансамбля. Offline-safe (Ollama localhost).
 
-АРХИТЕКТУРНАЯ РОЛЬ
-    Presentation / interaction слой. НЕ оценщик вероятности, НЕ участвует
-    в fusion. Ни KAT, ни одна из моделей не затрагиваются.
+Три уровня:
+  Tier 0 — нарратор: pre-classified JSON → клинический текст для врача
+  Tier 1 — аналитик ансамбля: raw per-layer outputs → матрица согласованности
+  Tier 2 — агент: function calling над движком DT (gemma4)
 
-    • Tier 0  — нарратор: L7-summary → текст              (MEDGEMMA)
-               Клиническое резюме итогового BEFE-вывода.
-
-    • Tier 1  — аналитик ансамбля: raw per-layer outputs  (MEDGEMMA)
-               Сырые выходы всех слоёв (≡ аналитический CSV).
-               Согласованность, CSDI-якорь, OOD, ранжированная
-               неопределённость. Ценность: то, что L7 не видит.
-
-    • Tier 2  — агент: function calling над движком DT     (GEMMA4)
-
-ЖЁСТКОЕ ПРАВИЛО
-    LLM НИКОГДА не вычисляет и не выдумывает числа. Все вероятности и CI
-    берутся дословно из переданного контекста. Это закреплено в системном
-    промпте и поддержано низкой температурой.
-
-ЗАВИСИМОСТИ
-    Только стандартная библиотека + requests. Пакет `ollama` не требуется.
-    Модуль не импортирует streamlit на верхнем уровне — тестируется автономно.
-
-ПОДКЛЮЧЕНИЕ В app.py (пример, app.py НЕ правится этим модулем):
-    # внутри уже посчитанного прохода, например новой вкладкой:
-    try:
-        import llm_consultant
-        with st.expander("Консультант (локальная LLM)"):
-            q = st.text_input("Вопрос", key="_llm_q")
-            if st.button("Сформулировать", key="_llm_go"):
-                st.write_stream(llm_consultant.consult_stream(globals(), q))
-    except Exception as _e:
-        st.caption(f"LLM-консультант недоступен: {_e}")
-
-ПРОВЕРКА АВТОНОМНО:
-    >>> import llm_consultant as L
-    >>> L.health_check()           # доступна ли Ollama
-    >>> print(L.consult({...}))    # с фиктивными globals
-═══════════════════════════════════════════════════════════════════════════
+Принцип: Python классифицирует, LLM объясняет — не наоборот.
+LLM не вычисляет вероятности и не ставит диагнозов.
+Зависимости: стандартная библиотека + requests.
 """
 
 from __future__ import annotations
@@ -70,7 +37,7 @@ _WARMUP_TIMEOUT = (5, int(os.environ.get("DT_LLM_WARMUP_TIMEOUT", 900)))
 
 _KEEP_ALIVE    = os.environ.get("DT_LLM_KEEP_ALIVE", "1h")
 _TEMPERATURE   = 0.15
-_NARRATOR_TEMP = 0.30
+_NARRATOR_TEMP = 0.35         # нарратор — живой язык; числа из контекста, не придумываются
 _NARRATOR_THINK = False  # chain-of-thought отключён — на CPU только съедает время
 
 # Куда писать аудит (рядом с существующим analytics-пайплайном).
@@ -204,105 +171,372 @@ def _extract_gat_neighbors(g: Dict[str, Any],
         return None
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  PRE-COMPUTATION LAYER (Tier 0 — перед LLM)
+#  Python-классификатор: все клинические категории вычисляются детерминированно
+#  ДО обращения к LLM. LLM получает уже готовые метки и только пишет текст.
+#
+#  Принцип: Neural pipeline → deterministic clinical facts → LLM narration
+#  LLM не переклассифицирует числа — она объясняет уже размеченную картину.
+# ══════════════════════════════════════════════════════════════════════════
+
+def build_interpretation_flags(g: Dict[str, Any]) -> Dict[str, Any]:
+    """Детерминированная классификация всех клинических категорий.
+
+    Не вызывает LLM. Результат — готовые метки для нарратора.
+    Пороги отражают принятые клинические диапазоны ЭКО.
+    """
+    res  = g.get("res") or {}
+    befe = g.get("_befe_res")
+
+    def _f(v):
+        try: return float(v) if v is not None else None
+        except: return None
+
+    flags: Dict[str, Any] = {}
+
+    # ── Уровень прогноза беременности ─────────────────────────────────────
+    p = _f(getattr(befe, "posterior", None)) if befe else None
+    if p is not None:
+        pp = p * 100
+        if pp >= 55:
+            flags["prognosis_level"] = "favorable"
+            flags["prognosis_hint"]  = "выше среднего — ≈ каждый второй перенос"
+        elif pp >= 40:
+            flags["prognosis_level"] = "good"
+            flags["prognosis_hint"]  = "умеренно благоприятный — ≈ каждый 2–3-й перенос"
+        elif pp >= 25:
+            flags["prognosis_level"] = "moderate"
+            flags["prognosis_hint"]  = "умеренный — ≈ каждый 3–4-й перенос"
+        else:
+            flags["prognosis_level"] = "low"
+            flags["prognosis_hint"]  = "ниже среднего — менее одного из четырёх"
+
+    # ── Ширина ДИ BEFE (статистическая неопределённость) ─────────────────
+    ci_lo = _f(getattr(befe, "ci_low",  None)) if befe else None
+    ci_hi = _f(getattr(befe, "ci_high", None)) if befe else None
+    if ci_lo is not None and ci_hi is not None:
+        ci_w = round((ci_hi - ci_lo) * 100, 1)
+        flags["CI_width_pp"] = ci_w
+        if ci_w < 15:
+            flags["CI_category"] = "low_statistical_uncertainty"
+        elif ci_w < 30:
+            flags["CI_category"] = "moderate_statistical_uncertainty"
+        else:
+            flags["CI_category"] = "high_statistical_uncertainty"
+
+    # ── Разброс ансамбля (модельная неопределённость) ─────────────────────
+    _mp = []
+    for _v in [res.get("p_per_transfer"),
+               (res.get("nn_prediction") or {}).get("base_prob_mean"),
+               g.get("_p_gnn_ens")]:
+        try:
+            if _v is not None: _mp.append(float(_v))
+        except: pass
+    if len(_mp) >= 2:
+        sp = round((max(_mp) - min(_mp)) * 100, 1)
+        flags["ensemble_spread_pp"] = sp
+        if sp < 10:
+            flags["agreement_category"] = "high_model_agreement"
+        elif sp < 20:
+            flags["agreement_category"] = "moderate_model_agreement"
+        else:
+            flags["agreement_category"] = "high_model_disagreement"
+
+    # ── OOD-статус ────────────────────────────────────────────────────────
+    if befe is not None:
+        ood_c = getattr(befe, "ood_clinical",    False)
+        ood_e = getattr(befe, "ood_embryology",  False)
+        ood_f = getattr(befe, "ood_final",       False)
+        if ood_f:
+            flags["OOD_status"] = "out_of_distribution"
+            flags["OOD_subspace"] = (
+                "clinical+embryological" if (ood_c and ood_e)
+                else "clinical" if ood_c else "embryological"
+            )
+        else:
+            flags["OOD_status"] = "in_distribution"
+
+    # ── Итоговая оценка надёжности (A / B / C) ────────────────────────────
+    rel = getattr(befe, "reliability", None) if befe else None
+    ood = flags.get("OOD_status") == "out_of_distribution"
+    ci_cat  = flags.get("CI_category", "")
+    agr_cat = flags.get("agreement_category", "")
+    if ood:
+        flags["confidence_grade"] = "C"
+    elif (ci_cat == "low_statistical_uncertainty"
+          and agr_cat == "high_model_agreement"
+          and (rel is None or rel >= 70)):
+        flags["confidence_grade"] = "A"
+    elif (ci_cat != "high_statistical_uncertainty"
+          and agr_cat != "high_model_disagreement"
+          and (rel is None or rel >= 45)):
+        flags["confidence_grade"] = "B"
+    else:
+        flags["confidence_grade"] = "C"
+
+    # ── Риск OHSS ─────────────────────────────────────────────────────────
+    # Пороги откалиброваны консервативно: LLM не должна переоценивать риски.
+    # Тяжёлый: любой ≥ 10% — реальная клиническая угроза.
+    # Умеренный: тяжёлый 5–9% ИЛИ умеренный ≥ 20% — наблюдение.
+    # Низкий: стандартное ведение без специальных мер.
+    ohss  = res.get("ohss") or {}
+    p_sev = _f(ohss.get("p_severe_ohss"))
+    p_mod = _f(ohss.get("p_moderate_ohss"))
+    if p_sev is not None and p_sev >= 0.10:
+        flags["OHSS_risk"]          = "high"
+        flags["OHSS_management"]    = "имеет смысл обсудить freeze-all как приоритетную опцию"
+    elif ((p_sev is not None and p_sev >= 0.05)
+          or (p_mod is not None and p_mod >= 0.20)):
+        flags["OHSS_risk"]          = "moderate"
+        flags["OHSS_management"]    = "мониторинг после пункции; freeze-all стоит держать в голове"
+    else:
+        flags["OHSS_risk"]          = "low"
+        flags["OHSS_management"]    = "стандартное наблюдение, специальных мер не требуется"
+
+    # ── Риск пустого цикла ────────────────────────────────────────────────
+    # ≥ 35%: существенный — влияет на консультирование.
+    # 20–34%: умеренный — стоит обсудить с пациенткой.
+    # < 20%: низкий — стандартная культивация.
+    empty = res.get("empty") or {}
+    p_nb  = _f(empty.get("p_no_blast"))
+    if p_nb is not None:
+        if p_nb >= 0.35:
+            flags["empty_cycle_risk"]        = "high"
+            flags["empty_cycle_management"]  = "обсудить с пациенткой заранее; может быть основанием для пересмотра тактики"
+        elif p_nb >= 0.20:
+            flags["empty_cycle_risk"]        = "moderate"
+            flags["empty_cycle_management"]  = "стоит учитывать при консультировании"
+        else:
+            flags["empty_cycle_risk"]        = "low"
+            flags["empty_cycle_management"]  = "стандартный прогноз эмбриологии"
+
+    # ── Фенотип ответа ────────────────────────────────────────────────────
+    ca    = g.get("ca") or res.get("cluster_analysis") or {}
+    cl    = ca.get("dominant_cluster")
+    probs = ca.get("cluster_probs") or {}
+    if cl is not None:
+        _labels = {0: "standard_responder",
+                   1: "poor_responder",
+                   2: "high_responder"}
+        flags["response_phenotype"] = _labels.get(int(cl), "unknown")
+        _conf = probs.get(int(cl))
+        if _conf is not None:
+            flags["phenotype_confidence_pct"] = round(float(_conf) * 100, 1)
+
+    # ── Стратегия банкинга MII ────────────────────────────────────────────
+    eb  = g.get("_eb")
+    age = _f(g.get("age"))
+    if isinstance(eb, dict):
+        fwd   = eb.get("forward_at_median") or {}
+        efp   = eb.get("euploid_for_preg")  or {}
+        exp_e = _f(fwd.get("mean"))
+        k50   = efp.get(0.50)
+        try:
+            import math as _math
+            cyc50 = (_math.ceil(k50 / exp_e)
+                     if k50 and exp_e and exp_e > 0 else None)
+        except: cyc50 = None
+        if cyc50 == 1 or (exp_e and k50 and exp_e >= k50):
+            flags["banking_strategy"] = "immediate_transfer_feasible"
+        elif cyc50 == 2:
+            flags["banking_strategy"] = "two_cycles_recommended"
+        elif cyc50 is not None and cyc50 >= 3:
+            flags["banking_strategy"] = "extended_accumulation"
+        else:
+            flags["banking_strategy"] = "insufficient_data"
+        # Срочность: возраст ≥ 38 повышает приоритет накопления
+        if age is not None and age >= 38:
+            flags["banking_age_urgency"] = "high"
+        elif age is not None and age >= 35:
+            flags["banking_age_urgency"] = "moderate"
+        else:
+            flags["banking_age_urgency"] = "low"
+
+    # ── Управление циклом ─────────────────────────────────────────────────
+    p_cancel = _f(res.get("p_cancel_risk"))
+    if p_cancel is not None:
+        if p_cancel >= 0.15:
+            flags["cycle_management"] = "high_cancellation_risk"
+        elif p_cancel >= 0.07:
+            flags["cycle_management"] = "monitor_closely"
+        else:
+            flags["cycle_management"] = "standard_cycle_expected"
+
+    return flags
+
+
+def build_narrative_context(g: Dict[str, Any]) -> Dict[str, Any]:
+    """Компактный пред-классифицированный контекст для нарратора Tier 0.
+
+    Заменяет build_clinical_context() как вход к LLM.
+    Ключевые свойства:
+      • JSON в ~3× меньше build_clinical_context() → меньше токенов → быстрее
+      • Все категории вычислены в Python ДО вызова LLM
+      • LLM объясняет метки, а не переоценивает числа
+    """
+    res  = g.get("res") or {}
+    befe = g.get("_befe_res")
+
+    def _f(v):
+        try: return float(v) if v is not None else None
+        except: return None
+    def _pv(v, nd=1):
+        x = _f(v)
+        return round(x * 100, nd) if x is not None else None
+
+    flags = build_interpretation_flags(g)
+
+    # ── Основа: пациент ───────────────────────────────────────────────────
+    ctx: Dict[str, Any] = {
+        "patient": {
+            "age":        _f(g.get("age")),
+            "amh_ng_ml":  _f(g.get("amh")),
+            "afc":        _f(g.get("afc")),
+            "attempt":    g.get("attempt_number"),
+        }
+    }
+
+    # ── Главный прогноз с предклассифицированными метками ─────────────────
+    if befe is not None:
+        ctx["main_forecast"] = {
+            "P_pct":         _pv(getattr(befe, "posterior", None)),
+            "CI_low_pct":    _pv(getattr(befe, "ci_low",    None)),
+            "CI_high_pct":   _pv(getattr(befe, "ci_high",   None)),
+            "CI_width_pp":   flags.get("CI_width_pp"),
+            # ↓ уже вычисленные категории — LLM только объясняет
+            "level":         flags.get("prognosis_level"),
+            "interpretation":flags.get("prognosis_hint"),
+        }
+
+    # ── Динамика цикла ────────────────────────────────────────────────────
+    ctx["cycle"] = {
+        "P_overall_pct":  _pv(res.get("p_overall_cycle")),
+        "P_cancel_pct":   _pv(res.get("p_cancel_risk")),
+        "P_viable_pct":   _pv(res.get("p_viable")),
+        "management":     flags.get("cycle_management"),
+    }
+
+    # ── Фенотип ───────────────────────────────────────────────────────────
+    ctx["response_phenotype"] = {
+        "label":          flags.get("response_phenotype"),
+        "confidence_pct": flags.get("phenotype_confidence_pct"),
+    }
+
+    # ── Риски с предклассифицированными уровнями ──────────────────────────
+    ohss  = res.get("ohss")  or {}
+    empty = res.get("empty") or {}
+    ctx["risks"] = {
+        "OHSS": {
+            "level":         flags.get("OHSS_risk"),
+            "management":    flags.get("OHSS_management"),   # pre-computed action hint
+            "P_mod_pct":     _pv(ohss.get("p_moderate_ohss")),
+            "P_sev_pct":     _pv(ohss.get("p_severe_ohss")),
+        },
+        "empty_cycle": {
+            "level":         flags.get("empty_cycle_risk"),
+            "management":    flags.get("empty_cycle_management"),
+            "P_no_blast_pct": _pv(empty.get("p_no_blast")),
+        },
+    }
+
+    # ── Банкинг MII ───────────────────────────────────────────────────────
+    eb = g.get("_eb")
+    if isinstance(eb, dict):
+        fwd = eb.get("forward_at_median") or {}
+        efp = eb.get("euploid_for_preg")  or {}
+        mt  = eb.get("mii_table")         or {}
+        k50, k70 = efp.get(0.50), efp.get(0.70)
+        try:
+            import math as _math
+            exp_e = _f(fwd.get("mean"))
+            c50   = (_math.ceil(k50 / exp_e) if k50 and exp_e and exp_e > 0 else None)
+            c70   = (_math.ceil(k70 / exp_e) if k70 and exp_e and exp_e > 0 else None)
+        except: c50 = c70 = None
+        _mii_target = (mt.get(min(k50 or 2, max(eb.get("k_targets", [2])))) or {}).get(0.80)
+        ctx["banking_mii"] = {
+            "MII_this_cycle":         int(eb.get("patient_mii_median") or 0) or None,
+            "euploids_expected":      round(exp_e, 1) if exp_e else None,
+            "euploids_for_P50":       k50,
+            "cycles_for_P50":         c50,
+            "cycles_for_P70":         c70,
+            "mii_target_80pct":       int(_mii_target) if _mii_target else None,
+            "strategy":               flags.get("banking_strategy"),
+            "age_urgency":            flags.get("banking_age_urgency"),
+        }
+
+    # ── Надёжность прогноза с итоговой оценкой ────────────────────────────
+    ctx["prediction_confidence"] = {
+        "grade":          flags.get("confidence_grade"),       # A / B / C
+        "CI_category":    flags.get("CI_category"),
+        "agreement":      flags.get("agreement_category"),
+        "BEFE_reliability": getattr(befe, "reliability", None) if befe else None,
+        "BEFE_band":      getattr(befe, "reliability_band", None) if befe else None,
+        "OOD_status":     flags.get("OOD_status"),
+        "OOD_subspace":   flags.get("OOD_subspace"),
+    }
+
+    # ── Исторические аналоги GAT (только сводка — не полный список) ───────
+    nb_full = _extract_gat_neighbors(g, max_n=7)
+    if nb_full:
+        sv = nb_full.get("сводка") or {}
+        top = (nb_full.get("соседи") or [{}])[0]
+        ctx["historical_analogues"] = {
+            "n":                  sv.get("число_соседей"),
+            "similarity_range":   (f"{sv.get('косинусное_сходство_мин')}–"
+                                   f"{sv.get('косинусное_сходство_макс')}"),
+            "GNN_P_range_pct":    f"{sv.get('GNN_P_мин_%')}–{sv.get('GNN_P_макс_%')}",
+            "GNN_P_median_pct":   sv.get("GNN_P_медиана_%"),
+            "closest": {
+                "similarity":     top.get("косинусное_сходство"),
+                "GNN_P_pct":      top.get("GNN_P_беременность_%"),
+                **(top.get("признаки") or {}),
+            },
+        }
+
+    return ctx
+
+
 # ──────────────────────────────────────────────────────────────────────────
-#  СИСТЕМНЫЙ ПРОМПТ (Tier 0)
+#  СИСТЕМНЫЙ ПРОМПТ (Tier 0) — v3
+#  Короткий (≈150 токенов): категории уже вычислены Python-кодом,
+#  LLM только пишет связный клинический текст.
 # ──────────────────────────────────────────────────────────────────────────
-_SYSTEM_NARRATOR = """Ты — опытный клинический консультант системы IVF Digital Twin.
-Твой читатель — ВРАЧ-репродуктолог. Твоя задача — не перечислять данные, а
-создать КЛИНИЧЕСКИЙ НАРРАТИВ: объяснить, что стоит за каждой цифрой, описать
-возможные пути развития событий при прохождении цикла, выделить то, на что
-врачу следует обратить внимание на каждом этапе.
+_SYSTEM_NARRATOR = """Ты — клинический консультант IVF Digital Twin. Читатель — лечащий врач.
 
-СТРОГИЕ ПРАВИЛА (нарушение недопустимо):
-1. Все числа — ТОЛЬКО из предоставленного JSON. Не вычислять, не выдумывать,
-   не округлять по-своему. Если значения нет — «не рассчитано».
-2. Числа — опорные точки; важнее — их клинический смысл и возможные следствия.
-3. Строй связный объяснительный текст: причина → следствие, «если → то»,
-   «это означает», «вероятный сценарий», «следует ожидать».
-4. Тон — коллеги-консультанта: осведомлённый, объяснительный, без директив.
-   Аудитория — врач; клиническая терминология, профессиональный регистр.
-5. Не давай конкретные дозы/протоколы как директиву; решение — за врачом.
-6. Отвечай на русском. Термины BEFE, CSDI, MII, эуплоид, OHSS — свободно.
+Получаешь pre-classified JSON: все категории (уровень прогноза, риски, надёжность,
+стратегия банкинга) уже вычислены Python-кодом. Твоя задача — написать связный
+клинический нарратив, объясняющий эти категории врачу.
 
-ФОРМАТ — развёрнутые разделы с объяснениями и сценариями
-(раздел пропускай только при полном отсутствии данных):
+ПРАВИЛА (нарушение недопустимо):
+1. Числа — ТОЛЬКО из JSON. Ничего не изобретать.
+2. НЕ переклассифицировать. Если JSON говорит "moderate" — объясняй "moderate".
+3. Не назначай лечение и не формулируй директивные рекомендации.
+   Используй: «можно рассмотреть», «имеет смысл обсудить», «стоит учитывать»,
+   «может быть основанием для». Не используй: «показан», «провести», «назначить».
+4. Тон: коллега-консультант, активный залог, без канцеляризмов.
+5. Отвечай на русском. Термины BEFE, MII, OHSS, ПГТ-А — свободно.
 
-### 1. Главный прогноз
-Назови вероятность BEFE и 95% ДИ. Затем объясни: что означает этот уровень
-вероятности в клинической практике ЭКО (сравни с типичным диапазоном для
-возраста и фенотипа)? Какие факторы данного случая тянут прогноз вверх или вниз?
-Что говорит ширина ДИ о надёжности числа — насколько широк диапазон реальных
-возможных исходов?
+ТЕРМИНОЛОГИЯ (строго соблюдать):
+• Аббревиатуры не переводить и не расшифровывать в тексте:
+  MII (не «зрелые яйцеклетки»), OHSS (не «синдром гиперстимуляции яичников»),
+  ПГТ-А (не «преимплантационное тестирование»), ЭКО, AFC, АМГ — как есть.
+• Эмбрионы и ооциты описывать без слова «единиц» и числительных с единицами
+  измерения: «3 бластоцисты», «2 эуплоидных эмбриона», «8 MII ооцитов» —
+  не «3 единицы бластоцист», не «2 единицы эмбрионов», не «8 единиц MII».
+• Правильные формы: бластоциста / бластоцисты / бластоцист, эмбрион / эмбрионов,
+  ооцит / ооцитов — использовать в зависимости от числа (склонение).
 
-### 2. Сценарии развития цикла
-Используй p_overall_cycle, p_per_transfer, p_cancel_risk и p_viable для описания
-ключевых развилок цикла:
-  — Вероятностный «маршрут» от стимуляции до переноса: что ожидается на каждом
-    этапе (пункция → оплодотворение → культивирование → перенос)?
-  — При каком сценарии цикл будет отменён (что значит этот конкретный % отмены)?
-  — Разница между p_per_transfer и p_overall_cycle: что означает «дойти до
-    переноса»? Какова вероятность не дойти и что тогда происходит?
-  — Как кумулятивная вероятность (при переносе всех эмбрионов) соотносится с
-    одним переносом — что означает этот разрыв для планирования тактики?
-
-### 3. Фенотип ответа и ожидания
-Опиши, что означает данный тип ответа (кластер) для ЭТОГО пациента:
-  — Чего ожидать от стимуляции: диапазон фолликулов, ооцитов, вероятная
-    чувствительность к гонадотропинам?
-  — Как этот фенотип соотносится с данными амг/афч/возраста — подтверждают
-    ли они друг друга, или есть расхождение?
-  — Какие нюансы протокола обычно актуальны для этого типа ответа?
-
-### 4. Клиническая картина рисков
-Для каждого присутствующего риска — не просто процент, а:
-  — OHSS: что означает умеренный/тяжёлый уровень, когда обычно проявляется
-    (после пункции или после переноса/ХГЧ), какие симптомы-маркеры, при каком
-    пороге рассматривается freeze-all вместо свежего переноса?
-  — Риск отсутствия бластоцист: на каком этапе цикла это станет ясно, что
-    означает для текущей тактики и стратегии следующих попыток?
-  — OHSS и риск отмены: есть ли связь для этого случая?
-
-### 5. Стратегия банкинга MII ооцитов
-КЛЮЧЕВОЕ РАЗГРАНИЧЕНИЕ: банкируются MII ООЦИТЫ (по нескольким циклам стимуляции),
-а не эмбрионы. Из накопленных MII → оплодотворение → культивирование → ПГТ-А →
-эуплоидные бластоцисты → перенос. Объясни логику цепочки:
-  — Сколько MII ожидается в ЭТОМ цикле (поле «MII_ожидается_этот_цикл»)?
-  — Сколько из них станут эуплоидными бластоцистами с учётом p_per_mii,
-    фертилизации, бластуляции и эуплоидии по возрасту
-    (поле «эуплоидных_бластоцист_из_этих_MII»)?
-  — Сколько эуплоидных эмбрионов нужно для P50/P70 беременности? Почему?
-  — Сколько ЦИКЛОВ СТИМУЛЯЦИИ нужно, чтобы накопить достаточно MII
-    (поля «циклов_стимуляции_для_P50/70»)? Что означает «суммарно MII»?
-  — Когда накопление MII оправдано против немедленного переноса?
-  — Как возраст влияет на срочность: почему снижение эуплоидии по возрасту
-    (Franasiak) делает стратегию накопления более или менее выгодной?
-
-### 6. Исторические аналоги (GAT k-NN)
-Если данные kNN_соседи есть, расскажи КЛИНИЧЕСКИ ЗНАЧИМУЮ ИСТОРИЮ:
-  — Из какой «популяции» исторических случаев наибольшее сходство? Что общего
-    у ближайших аналогов (возраст, ответ, эмбриологические параметры)?
-  — Опиши 2–3 ближайших аналога (все числа — дословно из контекста): что
-    отличает случай с наибольшим GNN-прогнозом от случая с наименьшим?
-    Какие признаки «разделяют» лучший и худший прогноз среди соседей?
-  — Как разброс GNN-вероятностей по соседям соотносится с диапазоном BEFE ДИ —
-    подтверждает ли реальная база ту же степень неопределённости?
-
-### 7. Природа и смысл неопределённости
-Объясни неопределённость механистически, а не просто как ширину ДИ:
-  — Откуда она: модели согласованы (узкий разброс ансамбля) или расходятся?
-    Если расходятся — что могут видеть по-разному нейросетевой и механистический
-    оценщики?
-  — Что означает ширина ДИ BEFE для принятия врачебных решений: где стоит
-    опираться на центральную оценку, а где лучше работать с диапазоном?
-  — Надёжность BEFE и её полоса: что клинически означает надёжность 60 vs 85?
-  — Если OOD активен — какой параметр вышел за пределы обучения? Как это
-    конкретно влияет на интерпретацию прогноза?
-
-### 8. Клинический итог
-Синтез: не просто пересказ — найди 2–3 ключевых клинических соображения,
-которые определяют ведение именно этого пациента. Что здесь нестандартно или
-требует особого внимания? Каков главный вопрос, на который система отвечает
-неопределённо — и что это значит для врача?"""
+РАЗДЕЛЫ (пропускай при отсутствии данных):
+### 1. Главный прогноз — объясни level и что он означает для этой пациентки
+### 2. Сценарии цикла — развилки, риск отмены, что отличает хороший исход от плохого
+### 3. Фенотип ответа — ожидания от стимуляции, нюансы протокола
+### 4. Риски — для каждого риска используй management из JSON как ориентир формулировки
+### 5. Банкинг MII — логика strategy, возрастная срочность, цепочка MII→эуплоиды
+### 6. Исторические аналоги — что говорят похожие случаи из базы (если есть)
+### 7. Надёжность прогноза — объясни confidence_grade (A/B/C) и оба источника
+         неопределённости (CI_category + agreement) в клиническом смысле
+### 8. Итог — 2–3 предложения: что главное для этого конкретного случая"""
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -831,7 +1065,7 @@ def consult(g: Dict[str, Any],
     question += _STYLE_HINT.get(style, "")
     if num_predict is None:
         num_predict = _STYLE_NUM_PREDICT.get(style)
-    ctx = build_clinical_context(g, include_trp=include_trp)
+    ctx = build_narrative_context(g)  # pre-classified compact context
     try:
         msg = _chat(_build_messages(ctx, question), model=model,
                     stream=False, temperature=_NARRATOR_TEMP,
@@ -858,7 +1092,7 @@ def consult_stream(g: Dict[str, Any],
     question += _STYLE_HINT.get(style, "")
     if num_predict is None:
         num_predict = _STYLE_NUM_PREDICT.get(style)
-    ctx = build_clinical_context(g, include_trp=include_trp)
+    ctx = build_narrative_context(g)  # pre-classified compact context
     collected: List[str] = []
     try:
         raw = _chat(_build_messages(ctx, question), model=model,
@@ -929,31 +1163,42 @@ _SYSTEM_ANALYST = """Ты — аналитик нейросетевого анс
 8. OOD_клинический → снижает доверие к нейросетевым оценкам L3/L6.
    OOD_эмбриологический → снижает вес CSDI в слиянии (L7 BEFE).
 9. Отвечать на русском.
+10. Не делать клинических назначений и финальных терапевтических рекомендаций.
+    Итог Tier 1 — только о согласованности моделей, диапазоне вероятности
+    и источниках неопределённости. Клиническое решение — за врачом.
 
 ФОРМАТ — строго 5 блоков, без введения и послесловия:
 
 [МАТРИЦА АНСАМБЛЯ]
-Таблица строк: L1 MC-prior | L3 KAT-FT | L3 KAN | L5 CSDI | L6 GAT-ens | L7 BEFE
+Таблица строк: L1 MC-prior | L3 KAT-FT | L3 KAN | L5 CSDI | L6 GAT-raw | L6 GAT-ens | L7 BEFE
 Колонки: Слой, P%, CI (низ–верх), Ширина CI, Статус
+Под таблицей одной строкой: разброс ансамбля = max(P%) − min(P%) по всем доступным слоям.
+ВАЖНО: разброс считается по значениям P% из таблицы — НЕ по ширине CI.
 
 [СОГЛАСОВАННОСТЬ]
-1–2 предложения: диапазон P% по ансамблю, оценка согласованности, выброс если есть.
+1–2 предложения. Формат: «Разброс ансамбля: X пп (max − min). Согласованность: ...»
+Шкала: < 10 пп = высокая, 10–20 пп = средняя, > 20 пп = низкая.
+Если есть явный выброс (один слой отклоняется > 15 пп от остальных) — назвать его.
 
 [ИСТОРИЧЕСКИЕ АНАЛОГИ GAT]
-Если kNN_соседи есть — 2–3 предложения: сколько реальных похожих циклов из базы,
-диапазон косинусного сходства, диапазон их GNN-прогнозов. Перечисли 2–3 ближайших
-аналога с числовым сходством и ключевыми признаками (возраст, АФЧ, ОКК, MII,
-бластоцисты). Если kNN недоступен — «GAT соседи не извлечены».
+Если kNN_соседи есть — ТАБЛИЦА, не перечисление:
+Строки: каждый сосед. Колонки: Ранг | Сходство | P GNN% | Возраст | AFC | ОКК | MII | Бласт | KPI
+Затем 1–2 предложения:
+  • Если GNN_P_стд < 2% — «прогнозы соседей однородны (стд X%), различия несущественны».
+  • Иначе — только ДЕЛЬТА между соседом с max и min GNN%: какие признаки отличаются?
+    НЕ пересказывать каждого соседа отдельно.
+Если kNN недоступен — «GAT соседи не извлечены».
 
 [ЯКОРЬ CSDI]
-1–2 предложения: согласован ли L5 с нейросетевыми (L3/L6)? Направление и величина
-расхождения. Если CSDI недоступна — явно отметить.
+1–2 предложения: согласован ли L5 с нейросетевыми (L3/L6)?
+Назвать абсолютное расхождение в пп (разница центральных оценок).
+> 10 пп = значимый конфликт механики с NN-прогнозом.
+Если CSDI недоступна — явно отметить.
 
 [ВЫВОД И НЕОПРЕДЕЛЁННОСТЬ]
-— Наиболее обоснованный диапазон P% (из наиболее согласованных / лучше
-  откалиброванных моделей) с кратким обоснованием.
-— Ранг неопределённости: ВЫСОКАЯ / СРЕДНЯЯ / НИЗКАЯ (и почему — 1 предложение).
-— Если OOD или риск отсутствия бластоцист влияет на применимость — 1 фраза."""
+— Наиболее обоснованный диапазон P%: с кратким обоснованием.
+— Ранг неопределённости: ВЫСОКАЯ / СРЕДНЯЯ / НИЗКАЯ (1 предложение с причиной).
+— Если OOD активен — 1 фраза о влиянии на применимость."""
 
 
 def build_ensemble_context(g: Dict[str, Any]) -> Dict[str, Any]:
@@ -1206,7 +1451,7 @@ def chat_stream(g: Dict[str, Any],
         model   : имя модели Ollama.
     """
     if tier == 0:
-        ctx    = build_clinical_context(g)
+        ctx    = build_narrative_context(g)  # pre-classified compact context
         system = _SYSTEM_NARRATOR
         seed_q = _DEFAULT_QUESTION + _STYLE_HINT.get(style, "")
     else:
@@ -1336,121 +1581,10 @@ def consult_agentic(g: Dict[str, Any],
     except (requests.RequestException, OllamaError) as exc:
         return f"Ошибка обращения к модели «{model}»: {exc}"
 
-
 # ──────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    """
-    Дымовой тест без app.py — фиктивные globals.
+    # Быстрая проверка соединения с Ollama:
+    #   python llm_consultant.py
+    print("Ollama доступна:", health_check())
+    print("Загруженные модели:", list_models())
 
-    Запуск:
-        cd <папка проекта>
-        python llm_consultant.py                    # оба теста
-        python llm_consultant.py tier0              # только Tier 0 (нарратор)
-        python llm_consultant.py tier1              # только Tier 1 (ансамбль)
-
-    Предварительно:
-        ollama serve                                # в отдельном терминале
-        ollama pull medgemma1.5                    # первый раз
-        ollama list                                 # проверить что модель есть
-    """
-    import sys, time
-
-    # ── Фиктивные globals (имитируют состояние app.py после расчёта) ──────
-    class _Befe:
-        posterior, ci_low, ci_high     = 0.412, 0.331, 0.498
-        ci_source                      = "clinical-beta-posterior"
-        reliability, reliability_band  = 68, "moderate"
-        prior_pull, evidence_pull      = 0.44, 0.56
-        ood_clinical                   = False
-        ood_embryology                 = False
-        ood_final                      = False
-        ood_note                       = "Within distribution"
-
-    fake_globals = {
-        "age": 34, "amh": 1.8, "afc": 11, "bmi": 23.5, "attempt_number": 2,
-        "_befe_res": _Befe(),
-        "_p_kat_raw": 0.40, "_p_nvsa": 0.43, "_w_gnn": 0.35,
-        "_p_gnn_raw": 0.34, "_p_gnn_ens": 0.38,
-        "_gnn_result": {"gnn_prob": 0.34, "ensemble_prob": 0.38, "w_gnn": 0.35},
-        "res": {
-            "p_per_transfer": 0.41, "p_overall_cycle": 0.38,
-            "p_cum_if_viable": 0.55, "p_viable": 0.93,
-            "p_cancel_risk": 0.06,
-            "blasts_med": 3.0, "good_med": 2.0, "mii_med": 8.0,
-            "rate_ci": (0.30, 0.53),
-            "nn_prediction": {
-                "base_prob_mean": 0.40,
-                "base_prob_ci":   (0.31, 0.50),
-            },
-            "nn_nvsa": {
-                "adjusted_mean": 0.43,
-                "adjusted_ci":   (0.33, 0.53),
-            },
-            "cluster_analysis": {
-                "dominant_cluster": 0,
-                "cluster_probs": {0: 0.68, 1: 0.14, 2: 0.18},
-            },
-            "empty": {"p_no_blast": 0.09, "p_no_good_blast": 0.21},
-            "ohss":  {"p_moderate_ohss": 0.10, "p_severe_ohss": 0.02},
-        },
-        "ca": {"dominant_cluster": 0,
-               "cluster_probs": {0: 0.68, 1: 0.14, 2: 0.18}},
-    }
-
-    run_tier = sys.argv[1] if len(sys.argv) > 1 else "both"
-
-    # ── Структура контекста без вызова LLM ────────────────────────────────
-    print("=" * 60)
-    print("  Ollama доступна:", health_check())
-    print("=" * 60)
-
-    if run_tier in ("tier1", "both"):
-        print("\n[Tier 1] build_ensemble_context — структура:")
-        print(json.dumps(build_ensemble_context(fake_globals),
-                         ensure_ascii=False, indent=2))
-
-    if run_tier in ("tier0", "both"):
-        print("\n[Tier 0] build_clinical_context — структура:")
-        print(json.dumps(build_clinical_context(fake_globals, include_trp=False),
-                         ensure_ascii=False, indent=2))
-
-    if not health_check():
-        print("\nOllama не запущена — LLM-тест пропущен.")
-        print("Запустите `ollama serve` и повторите.")
-        sys.exit(0)
-
-    # ── Прогрев ───────────────────────────────────────────────────────────
-    print("\nПрогрев модели (первый холодный старт на CPU — несколько минут)...")
-    t0 = time.time()
-    ok, msg = warmup(MEDGEMMA)
-    print(f"  {msg}  [{time.time() - t0:.0f} c]")
-    if not ok:
-        sys.exit(1)
-
-    # ── Tier 1: анализ ансамбля ───────────────────────────────────────────
-    if run_tier in ("tier1", "both"):
-        print("\n" + "=" * 60)
-        print("  TIER 1 — Анализ ансамбля (Ensemble Analyst)")
-        print("=" * 60)
-        t1 = time.time()
-        print(analyse_ensemble(fake_globals, audit=False))
-        print(f"\n[генерация: {time.time() - t1:.0f} c]")
-
-    # ── Tier 0: клиническое резюме ────────────────────────────────────────
-    # По умолчанию — narrative. Для быстрого теста: tier0 concise
-    # Переменные окружения для тонкой настройки скорости:
-    #   DT_LLM_NP_NARRATIVE=900   (меньше слов — быстрее)
-    #   DT_LLM_TIMEOUT_READ=1200  (для очень медленных CPU)
-    if run_tier in ("tier0", "both"):
-        _t0_style = sys.argv[2] if len(sys.argv) > 2 else "narrative"
-        _np = _STYLE_NUM_PREDICT.get(_t0_style, 1400)
-        print("\n" + "=" * 60)
-        print(f"  TIER 0 — Клиническое резюме (style={_t0_style}, "
-              f"max_tokens={_np}, timeout={_TIMEOUT_READ}s)")
-        print("=" * 60)
-        t2 = time.time()
-        print(consult(fake_globals, include_trp=False,
-                      style=_t0_style, audit=False))
-        elapsed = time.time() - t2
-        print(f"\n[генерация: {elapsed:.0f} c  ·  "
-              f"~{elapsed / max(_np, 1) * 1000:.0f} мс/токен]")
