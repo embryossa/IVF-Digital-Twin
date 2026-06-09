@@ -240,7 +240,7 @@ def _build_torch_graph(X_norm: np.ndarray, k: int,
 
     src_np, dst_np, wgt_np = _build_knn_graph_numpy(X_norm, k, threshold, min_edges)
 
-    edge_index = torch.tensor([src_np, dst_np], dtype=torch.long)
+    edge_index = torch.tensor(np.array([src_np, dst_np]), dtype=torch.long)
     edge_weight = torch.tensor(wgt_np, dtype=torch.float)
     edge_index, edge_weight = to_undirected(edge_index, edge_weight, X_norm.shape[0])
 
@@ -316,7 +316,12 @@ def predict_gnn(bundle: dict,
             x_raw[0, nan_mask] = scaler.mean_[nan_mask]
 
         # ── Масштабирование ───────────────────────────────────────────────────
-        x_scaled = scaler.transform(x_raw)  # shape [1, n_features]
+        # Передаём DataFrame с именами признаков чтобы подавить UserWarning
+        try:
+            import pandas as _pd
+            x_scaled = scaler.transform(_pd.DataFrame(x_raw, columns=features))  # [1, n_features]
+        except Exception:
+            x_scaled = scaler.transform(x_raw)  # fallback
 
         # ── Составной граф: training + новый пациент ─────────────────────────
         if train_X_scaled is not None and len(train_X_scaled) > 0:

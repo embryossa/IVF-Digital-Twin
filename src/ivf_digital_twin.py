@@ -79,6 +79,7 @@ NN_LIBS_ERROR = ""
 try:
     import torch
     import torch.nn as nn
+    import torch.nn.functional as F
     import joblib
     # Extra check: if torch loaded but is GPU build without GPU drivers,
     # it may fail later when tensors are created. Verify with a small op.
@@ -128,9 +129,14 @@ def _model_path(filename: str) -> str:
     return os.path.normpath(os.path.join(_HERE, "..", filename))
 
 NN_MODEL_PATHS = {
-    'kan':        _model_path('Prediction_KAN.pth'),
-    'ft':         _model_path('FTTransformer.joblib'),
-    'calibrated': _model_path('KAT_calibrated_model.pkl'),
+    'kan':              _model_path('Prediction_KAN.pth'),
+    'ft':               _model_path('FTTransformer.joblib'),
+    # Optional. The new training script saves isotonic_ensemble.pkl.
+    # KAT_calibrated_model.pkl is still supported for older Venn-Abers wrappers.
+    'isotonic':         _model_path('isotonic_ensemble.pkl'),
+    'calibrated':       _model_path('KAT_calibrated_model.pkl'),
+    # Optional: if you later save ensemble_model.raw_weights, put it under this name.
+    'ensemble_weights': _model_path('KAT_ensemble_raw_weights.pth'),
 }
 
 # ============================================================
@@ -781,63 +787,201 @@ NN_FEATURE_NAMES = [
 
 if NN_LIBS_AVAILABLE:
 
-    class KAN(nn.Module):
-        """KAN architecture matching the trained model."""
-        def __init__(self):
+    def _ft_proba(ft_model, df: pd.DataFrame) -> np.ndarray:
+        """
+        Return a 1D numpy array with class-1 probabilities from mambular
+        FTTransformerClassifier. Different mambular versions may return
+        shape (n,), (n, 1), or (n, 2).
+        """
+        p = ft_model.predict_proba(df)
+        p = np.asarray(p, dtype=float)
+        if p.ndim == 1:
+            return p
+        if p.shape[1] == 1:
+            return p[:, 0]
+        return p[:, 1]
+
+    class KANLinear(nn.Module):
+        """
+        One true KAN layer with trainable B-spline functions on edges.
+        Must match train_kat.py / train_kat_fixed.py architecture.
+        """
+        def __init__(self, in_features, out_features, grid_size=5, spline_order=3,
+                     scale_noise=0.1, scale_base=1.0, scale_spline=1.0,
+                     grid_eps=0.02, grid_range=(-50.0, 50.0)):
             super().__init__()
-            self.fc1 = nn.Linear(18, 10)
-            self.fc2 = nn.Linear(10, 1)
-        def forward(self, x):
-            x = torch.relu(self.fc1(x))
-            return self.fc2(x)
+            self.in_features = in_features
+            self.out_features = out_features
+            self.grid_size = grid_size
+            self.spline_order = spline_order
+            self.scale_base = scale_base
+            self.scale_spline = scale_spline
+            self.grid_eps = grid_eps
+            self.base_act = nn.SiLU()
+
+            h = (grid_range[1] - grid_range[0]) / grid_size
+            knot = (torch.arange(-spline_order, grid_size + spline_order + 1,
+                                 dtype=torch.float32) * h + grid_range[0])
+            self.register_buffer(
+                "grid",
+                knot.unsqueeze(0).expand(in_features, -1).contiguous()
+            )
+
+            self.base_weight = nn.Parameter(torch.empty(out_features, in_features))
+            self.spline_weight = nn.Parameter(
+                torch.empty(out_features, in_features, grid_size + spline_order)
+            )
+            self.spline_scaler = nn.Parameter(torch.empty(out_features, in_features))
+            self._init_weights(scale_noise)
+
+        def _init_weights(self, scale_noise):
+            nn.init.kaiming_uniform_(self.base_weight, a=5 ** 0.5)
+            nn.init.kaiming_uniform_(self.spline_scaler, a=5 ** 0.5)
+            with torch.no_grad():
+                x_init = self.grid[:, self.spline_order:-self.spline_order].T
+                noise = ((torch.rand(self.grid_size + 1, self.in_features,
+                                     self.out_features) - 0.5)
+                         * scale_noise / self.grid_size)
+                self.spline_weight.data.copy_(self._curve2coeff(x_init, noise))
+
+        def b_splines(self, x: torch.Tensor) -> torch.Tensor:
+            grid = self.grid
+            x_lo = grid[:, self.spline_order].unsqueeze(0)
+            x_hi = grid[:, -(self.spline_order + 1)].unsqueeze(0)
+            x_e = x.clamp(x_lo, x_hi).unsqueeze(-1)
+            bases = ((x_e >= grid[:, :-1]) & (x_e < grid[:, 1:])).to(x.dtype)
+            for k in range(1, self.spline_order + 1):
+                dl = grid[:, k:-1] - grid[:, :-(k + 1)]
+                dr = grid[:, k + 1:] - grid[:, 1:-k]
+                bases = ((x_e - grid[:, :-(k + 1)]) / (dl + 1e-8) * bases[:, :, :-1]
+                         + (grid[:, k + 1:] - x_e) / (dr + 1e-8) * bases[:, :, 1:])
+            return bases.contiguous()
+
+        def _curve2coeff(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+            A = torch.nan_to_num(self.b_splines(x).permute(1, 0, 2),
+                                 nan=0., posinf=0., neginf=0.)
+            B = torch.nan_to_num(y.permute(1, 0, 2),
+                                 nan=0., posinf=0., neginf=0.)
+            sol = torch.nan_to_num(torch.linalg.pinv(A) @ B, nan=0.)
+            return sol.permute(2, 0, 1).contiguous()
+
+        @property
+        def scaled_spline_weight(self):
+            return self.spline_weight * self.spline_scaler.unsqueeze(-1)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            base_out = F.linear(self.base_act(x), self.base_weight * self.scale_base)
+            spline_b = self.b_splines(x).reshape(x.size(0), -1)
+            spline_w = (self.scaled_spline_weight * self.scale_spline).reshape(
+                self.out_features, -1
+            )
+            return base_out + F.linear(spline_b, spline_w)
+
+    class KAN(nn.Module):
+        """
+        True Kolmogorov-Arnold Network matching the retrained model:
+        width=[18, 10, 1], grid=5, spline order=3, raw IVF features.
+        """
+        def __init__(self, width=None, grid=5, k=3,
+                     scale_noise=0.1, scale_base=1.0, scale_spline=1.0,
+                     grid_eps=0.02, grid_range=(-50.0, 50.0)):
+            super().__init__()
+            if width is None:
+                width = [18, 10, 1]
+            self.width = width
+            self.layers = nn.ModuleList([
+                KANLinear(width[i], width[i + 1],
+                          grid_size=grid, spline_order=k,
+                          scale_noise=scale_noise, scale_base=scale_base,
+                          scale_spline=scale_spline, grid_eps=grid_eps,
+                          grid_range=grid_range)
+                for i in range(len(width) - 1)
+            ])
+            self.norms = nn.ModuleList([
+                nn.LayerNorm(width[i + 1]) for i in range(len(width) - 2)
+            ])
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            for i, layer in enumerate(self.layers):
+                x = layer(x)
+                if i < len(self.norms):
+                    x = self.norms[i](x)
+            return x
 
     class EnsembleModel(nn.Module):
-        """KAN + FT-Transformer weighted ensemble."""
+        """
+        KAN + FTTransformer weighted ensemble.
+        Output is probability, not logit. Weights are normalized by softmax,
+        matching the new training code.
+        """
         def __init__(self, kan_model, ft_model, feature_names):
             super().__init__()
             self.kan_model = kan_model
             self.ft_model = ft_model
-            self.kan_weight = nn.Parameter(torch.tensor([0.5], requires_grad=True))
-            self.ft_weight  = nn.Parameter(torch.tensor([0.5], requires_grad=True))
-            self.feature_names = feature_names
-        def forward(self, x):
-            k = torch.sigmoid(self.kan_model(x))
-            x_df = pd.DataFrame(x.cpu().numpy(), columns=self.feature_names)
-            f = torch.tensor(self.ft_model.predict_proba(x_df)).float().to(x.device)
-            return (self.kan_weight * k.squeeze() + self.ft_weight * f.squeeze()).unsqueeze(1)
+            self.feature_names = list(feature_names)
+            self.raw_weights = nn.Parameter(torch.zeros(2))
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            # KAN: logit -> probability
+            kan_prob = torch.sigmoid(self.kan_model(x).squeeze(-1))
+
+            # FTTransformer is external/sklearn-like; it is outside torch graph.
+            x_df = pd.DataFrame(x.detach().cpu().numpy(), columns=self.feature_names)
+            ft_prob = torch.tensor(
+                _ft_proba(self.ft_model, x_df), dtype=torch.float32, device=x.device
+            )
+
+            w = torch.softmax(self.raw_weights, dim=0)
+            ensemble = w[0] * kan_prob + w[1] * ft_prob
+            return ensemble.unsqueeze(1)
 
     class EnsembleWrapper:
         """sklearn-compatible wrapper for batched probability output."""
-        def __init__(self, ensemble_model):
+        def __init__(self, ensemble_model, calibrator=None, source_label=None):
             self.ensemble_model = ensemble_model
+            self.calibrator = calibrator
             self.classes_ = np.array([0, 1])
-        def fit(self, X, y): pass
+            self.source_label = source_label or "KAN + FT-Transformer ensemble"
+
+        def fit(self, X, y):
+            return self
+
         def predict_proba(self, X):
+            X = np.asarray(X, dtype=np.float32)
             with torch.no_grad():
-                preds = self.ensemble_model(torch.tensor(X).float())
-            probs = preds.squeeze().numpy()
+                x_t = torch.tensor(X, dtype=torch.float32)
+                preds = self.ensemble_model(x_t).squeeze().detach().cpu().numpy()
+            probs = np.asarray(preds, dtype=float)
             if probs.ndim == 0:
                 probs = np.array([float(probs)])
-            return np.column_stack((1 - probs, probs))
-
+            if self.calibrator is not None:
+                probs = self.calibrator.predict(probs)
+            probs = np.clip(probs, 0.001, 0.999)
+            return np.column_stack((1.0 - probs, probs))
 
 def load_nn_ensemble(paths: dict = NN_MODEL_PATHS):
     """
-    Try to load the NN ensemble. Returns a fitted wrapper or None.
-    Prints clear diagnostics showing exact file paths searched.
+    Load the retrained NN ensemble. Required files:
+      - Prediction_KAN.pth
+      - FTTransformer.joblib
+
+    Optional files:
+      - isotonic_ensemble.pkl          (new train_kat.py calibration output)
+      - KAT_calibrated_model.pkl       (legacy wrapper, if present)
+      - KAT_ensemble_raw_weights.pth   (optional raw softmax weights)
+
+    Returns a sklearn-compatible wrapper or None.
     """
     if not NN_LIBS_AVAILABLE:
         print(f"[v6] NN ensemble disabled. Reason: {NN_LIBS_ERROR}")
-        if "DLL" in NN_LIBS_ERROR or "fbgemm" in NN_LIBS_ERROR:
-            print("     Fix: pip install torch --index-url https://download.pytorch.org/whl/cpu")
-        else:
-            print("     Fix: pip install torch --index-url https://download.pytorch.org/whl/cpu")
+        print("     Fix: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu")
         return None
 
-    missing = {k: p for k, p in paths.items() if not os.path.exists(p)}
-    if missing:
-        print("[v6] NN model files not found:")
-        for k, p in missing.items():
+    required = {k: paths[k] for k in ("kan", "ft")}
+    missing_required = {k: p for k, p in required.items() if not os.path.exists(p)}
+    if missing_required:
+        print("[v6] Required NN model files not found:")
+        for k, p in missing_required.items():
             print(f"     {k:12s} -> expected at: {p}")
         root = os.path.normpath(os.path.join(_HERE, ".."))
         print(f"\n     Place model files in one of:")
@@ -847,18 +991,30 @@ def load_nn_ensemble(paths: dict = NN_MODEL_PATHS):
         print("\n     Falling back to FORTUNE+KPI ensemble.")
         return None
 
+    def _torch_load(path):
+        """Compatible torch.load for both newer and older PyTorch versions."""
+        try:
+            return torch.load(path, map_location="cpu", weights_only=True)
+        except TypeError:
+            return torch.load(path, map_location="cpu")
+        except Exception:
+            # Some older checkpoints / PyTorch builds are not compatible with weights_only=True.
+            return torch.load(path, map_location="cpu", weights_only=False)
+
     try:
-        kan_model = KAN()
-        kan_model.load_state_dict(
-            torch.load(paths['kan'], weights_only=True, map_location='cpu')
-        )
+        kan_model = KAN(width=[18, 10, 1], grid=5, k=3, grid_range=(-50.0, 50.0))
+        state = _torch_load(paths["kan"])
+        kan_model.load_state_dict(state)
         kan_model.eval()
-        print(f"[v6] KAN loaded: {paths['kan']}")
+        for p in kan_model.parameters():
+            p.requires_grad_(False)
+        print(f"[v6] True KAN loaded: {paths['kan']}")
 
         try:
-            ft_model = joblib.load(paths['ft'])
+            ft_model = joblib.load(paths["ft"])
+            print(f"[v6] FTTransformer loaded: {paths['ft']}")
         except ModuleNotFoundError as e:
-            missing_mod = str(e)
+            missing_mod = str(e).replace("No module named ", "").strip("'\"")
             print(f"[v6] Cannot load FTTransformer: missing module {missing_mod}")
             if "mambular" in missing_mod:
                 print("     Fix: python -m pip install mambular")
@@ -870,21 +1026,53 @@ def load_nn_ensemble(paths: dict = NN_MODEL_PATHS):
             return None
 
         ensemble = EnsembleModel(kan_model, ft_model, NN_FEATURE_NAMES)
+        ensemble.eval()
 
-        try:
-            wrapped = joblib.load(paths['calibrated'])
-            print("[v6] NN ensemble loaded WITH Venn-Abers calibration.")
-        except ModuleNotFoundError as e:
-            print(f"[v6] Calibrated wrapper missing module: {e}")
-            print("     Using uncalibrated ensemble.")
-            wrapped = EnsembleWrapper(ensemble)
-        except Exception:
-            wrapped = EnsembleWrapper(ensemble)
-            print("[v6] NN ensemble loaded WITHOUT calibration wrapper.")
+        # Optional: load learned ensemble raw weights if they are saved separately.
+        ew_path = paths.get("ensemble_weights")
+        if ew_path and os.path.exists(ew_path):
+            raw_w = _torch_load(ew_path)
+            if isinstance(raw_w, dict):
+                raw_w = raw_w.get("raw_weights", raw_w.get("ensemble_raw_weights", raw_w))
+            raw_w = torch.as_tensor(raw_w, dtype=torch.float32).view(-1)
+            if raw_w.numel() == 2:
+                with torch.no_grad():
+                    ensemble.raw_weights.copy_(raw_w)
+                w = torch.softmax(ensemble.raw_weights, dim=0).detach().cpu().numpy()
+                print(f"[v6] Ensemble weights loaded: KAN={w[0]:.3f}, FT={w[1]:.3f}")
+            else:
+                print(f"[v6] Ensemble weights ignored: expected 2 values, got {raw_w.numel()}.")
+        else:
+            w = torch.softmax(ensemble.raw_weights, dim=0).detach().cpu().numpy()
+            print(f"[v6] Ensemble weights file not found; using equal softmax weights: "
+                  f"KAN={w[0]:.3f}, FT={w[1]:.3f}")
 
-        print(f"     KAN        : {paths['kan']}")
-        print(f"     FTT        : {paths['ft']}")
-        print(f"     Calibrated : {paths['calibrated']}")
+        # Optional new isotonic calibrator saved by train_kat.py.
+        calibrator = None
+        iso_path = paths.get("isotonic")
+        if iso_path and os.path.exists(iso_path):
+            try:
+                calibrator = joblib.load(iso_path)
+                print(f"[v6] Isotonic ensemble calibrator loaded: {iso_path}")
+            except Exception as e:
+                print(f"[v6] Isotonic calibrator could not be loaded ({e}); using uncalibrated ensemble.")
+
+        # Optional legacy calibrated wrapper. Use only if present and loadable.
+        legacy_path = paths.get("calibrated")
+        if legacy_path and os.path.exists(legacy_path):
+            try:
+                wrapped = joblib.load(legacy_path)
+                print(f"[v6] Legacy calibrated wrapper loaded: {legacy_path}")
+                return wrapped
+            except Exception as e:
+                print(f"[v6] Legacy calibrated wrapper ignored ({e}); using current wrapper.")
+
+        wrapped = EnsembleWrapper(
+            ensemble,
+            calibrator=calibrator,
+            source_label="KAN + FT-Transformer ensemble" + (" + isotonic calibration" if calibrator else "")
+        )
+        print("[v6] NN ensemble ready.")
         return wrapped
 
     except Exception as exc:
@@ -1026,10 +1214,12 @@ def stage8_nn_prediction(patient: PatientInput, res: Dict,
 
     features = build_nn_features(patient, res, attempt_number, follicles)
     probs = nn_model.predict_proba(features.values)[:, 1]
+    probs = np.asarray(probs, dtype=float)
     probs = np.clip(probs, 0.001, 0.999)
+    source_label = getattr(nn_model, "source_label", "KAN + FT-Transformer ensemble")
 
     return {
-        "source":           "KAN + FT-Transformer ensemble (calibrated)",
+        "source":           source_label,
         "sim_probs":        probs,
         "base_prob_mean":   float(np.mean(probs)),
         "base_prob_median": float(np.median(probs)),
