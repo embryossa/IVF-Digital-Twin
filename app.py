@@ -792,9 +792,12 @@ st.sidebar.title("IVF Digital Twin v7.0")
 st.sidebar.caption("from in vitro to in silico")
 st.sidebar.markdown("---")
 
-# ── Краткий отчёт для пациента (модуль patient_brief.py, опционально) ──────
-_BRIEF_AVAILABLE = os.path.exists(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "patient_brief.py")
+# ── Краткий отчёт для пациента (модуль patient_brief, опционально) ──────
+_root_files = os.listdir(_BASE_DIR)
+_BRIEF_AVAILABLE = (
+    "patient_brief.py" in _root_files
+    or any(name.startswith("patient_brief") and name.endswith(".pyd")
+           for name in _root_files)
 )
 if _BRIEF_AVAILABLE:
     # Краткий режим — по умолчанию. Расширенный включается кнопкой в отчёте.
@@ -806,7 +809,13 @@ age  = st.sidebar.number_input("Возраст (лет)", 18, 50, 35, 1)
 amh  = st.sidebar.number_input("АМГ (нг/мл)", 0.01, 15.0, 2.50, 0.10,
                                  format="%.2f")
 afc  = st.sidebar.number_input("АФС (антральные фолликулы)", 1, 60, 15, 1)
-bmi  = st.sidebar.number_input("ИМТ (кг/м²)", 15.0, 45.0, 23.0, 0.5)
+bmi_col1, bmi_col2 = st.sidebar.columns(2)
+with bmi_col1:
+    _height_cm = st.number_input("Рост (см)", 140, 200, 165, 1)
+with bmi_col2:
+    _weight_kg = st.number_input("Вес (кг)", 40, 150, 65, 1)
+bmi = round(_weight_kg / (_height_cm / 100) ** 2, 1)
+st.sidebar.caption(f"ИМТ: **{bmi} кг/м²** · {'↑ избыток' if bmi >= 30 else ('↓ дефицит' if bmi < 18.5 else '✓ норма')}")
 
 st.sidebar.markdown("---")
 st.sidebar.header("Параметры цикла")
@@ -959,10 +968,12 @@ def get_csdi_model():
         return None
     for _d in _CSDI_MODEL_DIRS:
         _cfg = os.path.join(_d, "config.json")
+        _cfg_enc = _cfg + ".enc"
         # Accept either plain .pt or encrypted .pt.enc
         _wts_plain = os.path.join(_d, "csdi_weights.pt")
         _wts_enc   = os.path.join(_d, "csdi_weights.pt.enc")
-        if os.path.isfile(_cfg) and (os.path.isfile(_wts_plain) or os.path.isfile(_wts_enc)):
+        if ((os.path.isfile(_cfg) or os.path.isfile(_cfg_enc))
+                and (os.path.isfile(_wts_plain) or os.path.isfile(_wts_enc))):
             try:
                 return EmbryoHybridV3.load(_d)
             except Exception as _e:
@@ -1317,9 +1328,14 @@ if _BEFE_OK:
     # детектор просто выключен, без ошибок.
     if "_befe_ood_stats" not in st.session_state:
         _ood_npz = os.path.join(_BASE_DIR, "models", "befe_ood_stats.npz")
-        if os.path.exists(_ood_npz):
+        _ood_path = _ood_npz if os.path.exists(_ood_npz) else _ood_npz + ".enc"
+        if os.path.exists(_ood_path):
             try:
-                _z = np.load(_ood_npz, allow_pickle=True)
+                if _ood_path.endswith(".enc"):
+                    from crypt_engine import load_encrypted_numpy
+                    _z = load_encrypted_numpy(_ood_path, allow_pickle=True)
+                else:
+                    _z = np.load(_ood_path, allow_pickle=True)
                 st.session_state["_befe_ood_stats"] = {
                     "clinical_mu":      _z["clinical_mu"],
                     "clinical_cov_inv": _z["clinical_cov_inv"],
