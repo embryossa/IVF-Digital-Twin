@@ -1,0 +1,63 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "purpose": "Externalised, citable parameters for the deterministic stimulation-protocol module (stim_protocol.py). Edit values here; never hard-code clinical thresholds in code.",
+    "units": {
+      "amh": "ng/mL (converted internally to pmol/L via amh_pmol_per_ng_ml)",
+      "dose": "IU/day (conventional gonadotrophin) unless follitropin_delta branch is used"
+    },
+    "amh_pmol_per_ng_ml": 7.14,
+    "disclaimer": "Decision support only. The treating physician sets the final dose and protocol. Values encode published anchors; verify against your local protocol and current SmPCs."
+  },
+
+  "phenotype_thresholds": {
+    "_source": "ORT-based stratification consistent with Bologna/POSEIDON criteria and AMH-stratified dose-response trials (Arce et al.; ESHRE OS guideline 2025).",
+    "high_responder": { "amh_ng_ml_min": 3.4, "afc_min": 18, "logic": "OR" },
+    "poor_responder": { "amh_ng_ml_max": 1.1, "afc_max": 5,  "logic": "OR" }
+  },
+
+  "ohss_thresholds": {
+    "_source": "ASRM OHSS prevention guideline 2023 (Fertil Steril 2024;121:230-45): high AMH, PCOS and anticipated high yield drive OHSS risk; antagonist preferred when OHSS concern.",
+    "amh_ng_ml_elevated": 3.4,
+    "afc_elevated": 18,
+    "amh_ng_ml_high": 5.0,
+    "afc_high": 24
+  },
+
+  "target_yield": {
+    "_source": "LBR plateaus around the mid-teens of oocytes while OHSS risk keeps rising; supports a bounded target rather than 'maximise'. Confirm anchor (e.g. Sunkara et al., Hum Reprod 2011) against your registry.",
+    "normal_responder": [8, 14],
+    "high_responder":   [8, 12],
+    "poor_responder":   [4, 8]
+  },
+
+  "dose_bands_iu": {
+    "_source": "ESHRE OS guideline 2025: conventional daily FSH 150-225 IU. ORT-based dosing reduces moderate/severe OHSS. In poor responders higher doses do NOT improve live birth (inverse FSH-dose/LBR relationship, JARG 2021); hence an explicit ceiling, not an open escalation.",
+    "normal_responder": { "low": 150, "high": 225 },
+    "high_responder":   { "low": 100, "high": 150 },
+    "poor_responder":   { "low": 225, "high": 300, "ceiling_note": "higher_dose_no_LBR_gain" }
+  },
+
+  "dose_modifiers": {
+    "_source": "Weak/mixed evidence; applied as small bounded nudges, flagged in output as low-confidence.",
+    "bmi": { "apply_above": 30.0, "delta_iu": 25, "note": "modest upward nudge for high BMI; evidence weak" },
+    "age": { "apply_at_or_above": 40, "delta_iu": 25, "note": "modest upward nudge >=40y in non-high-responders" }
+  },
+
+  "follitropin_delta": {
+    "_VERIFY": "DISABLED by default. The exact AMH->ug/kg steps below are placeholders. Confirm every value against the CURRENT Rekovelle (follitropin delta) SmPC for your market BEFORE enabling for any clinical use.",
+    "enabled": false,
+    "requires": ["weight_kg"],
+    "amh_pmol_fixed_dose_below": 15.0,
+    "fixed_dose_ug": 12.0,
+    "min_ug": 6.0,
+    "max_ug": 12.0,
+    "ug_per_kg_table_placeholder": [
+      { "amh_pmol_min": 15.0, "amh_pmol_max": 16.9, "ug_per_kg": 0.19 },
+      { "amh_pmol_min": 17.0, "amh_pmol_max": 18.9, "ug_per_kg": 0.18 },
+      { "amh_pmol_min": 19.0, "amh_pmol_max": 24.9, "ug_per_kg": 0.16 },
+      { "amh_pmol_min": 25.0, "amh_pmol_max": 33.9, "ug_per_kg": 0.14 },
+      { "amh_pmol_min": 34.0, "amh_pmol_max": 999.0, "ug_per_kg": 0.10 }
+    ]
+  }
+}

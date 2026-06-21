@@ -382,10 +382,14 @@ class BayesianEvidenceFusionEngine:
             ood_factor = max(1.0 - 0.175 * min(ratio_final - 1.0, 2.0), 0.65)
             reliability = reliability * ood_factor
         reliability = int(round(min(max(reliability, 0.0), 100.0)))
-        rel_band = ("High" if reliability >= 75
-                    else "Moderate" if reliability >= 55 else "Low")
-        consensus = ("High" if cons_val >= 0.85
-                     else "Moderate" if cons_val >= 0.65 else "Low")
+        # [CALIB] Label boundaries relaxed so the continuous scores (shown as-is
+        # in the UI) map onto realistic bands instead of reading "Low" almost
+        # always. The numeric reliability / cons_val are NOT changed — only the
+        # category cut-points. OOD detection and the raw scores are untouched.
+        rel_band = ("High" if reliability >= 70
+                    else "Moderate" if reliability >= 45 else "Low")
+        consensus = ("High" if cons_val >= 0.75
+                     else "Moderate" if cons_val >= 0.50 else "Low")
 
         _tau_sum = sum(taus.values())
         ev_weights = {k: round(v / _tau_sum, 3) for k, v in taus.items()}

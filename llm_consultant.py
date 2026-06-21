@@ -236,9 +236,13 @@ def build_interpretation_flags(g: Dict[str, Any]) -> Dict[str, Any]:
     if len(_mp) >= 2:
         sp = round((max(_mp) - min(_mp)) * 100, 1)
         flags["ensemble_spread_pp"] = sp
-        if sp < 10:
+        # [CALIB] Wider bands: a 3-estimator (L1/L3/L6) spread naturally exceeds
+        # 10pp because the mechanistic prior differs from the neural heads, so the
+        # old 10/20 cut-points read "disagreement" almost always. Raw spread_pp is
+        # still reported unchanged; only the label boundary moves.
+        if sp < 15:
             flags["agreement_category"] = "high_model_agreement"
-        elif sp < 20:
+        elif sp < 30:
             flags["agreement_category"] = "moderate_model_agreement"
         else:
             flags["agreement_category"] = "high_model_disagreement"
@@ -260,17 +264,24 @@ def build_interpretation_flags(g: Dict[str, Any]) -> Dict[str, Any]:
     # ── Итоговая оценка надёжности (A / B / C) ────────────────────────────
     rel = getattr(befe, "reliability", None) if befe else None
     ood = flags.get("OOD_status") == "out_of_distribution"
+    ood_sub = flags.get("OOD_subspace", "")
     ci_cat  = flags.get("CI_category", "")
     agr_cat = flags.get("agreement_category", "")
-    if ood:
+    # [CALIB] OOD no longer forces C unconditionally: a mild single-subspace OOD
+    # with acceptable reliability is treated as caution (grade B), while dual-
+    # subspace OOD or genuinely low reliability still yields C. Reliability cut-
+    # points lowered (A: 70->60, B: 45->35) to match the recalibrated bands.
+    if ood and (ood_sub == "clinical+embryological"
+                or (rel is not None and rel < 35)):
         flags["confidence_grade"] = "C"
-    elif (ci_cat == "low_statistical_uncertainty"
+    elif (not ood
+          and ci_cat == "low_statistical_uncertainty"
           and agr_cat == "high_model_agreement"
-          and (rel is None or rel >= 70)):
+          and (rel is None or rel >= 60)):
         flags["confidence_grade"] = "A"
     elif (ci_cat != "high_statistical_uncertainty"
           and agr_cat != "high_model_disagreement"
-          and (rel is None or rel >= 45)):
+          and (rel is None or rel >= 35)):
         flags["confidence_grade"] = "B"
     else:
         flags["confidence_grade"] = "C"
@@ -494,6 +505,17 @@ def build_narrative_context(g: Dict[str, Any]) -> Dict[str, Any]:
             },
         }
 
+    # [IMP STIM] Protocol/guideline grounding — deterministic, graceful fallback.
+    # Adds dose nomogram + matched published recommendations so the narrator can
+    # explain the L7/BEFE prognosis IN CONCORDANCE with guidelines, not in isolation.
+    try:
+        from protocol_guidance import build_protocol_guidance
+        _pg = build_protocol_guidance(g)
+        if _pg:
+            ctx["protocol_guidance"] = _pg
+    except Exception:
+        pass  # feature optional; never break the existing narrator
+
     return ctx
 
 
@@ -517,16 +539,6 @@ _SYSTEM_NARRATOR = """Ты — клинический консультант IVF
 4. Тон: коллега-консультант, активный залог, без канцеляризмов.
 5. Отвечай на русском. Термины BEFE, MII, OHSS, ПГТ-А — свободно.
 
-ТЕРМИНОЛОГИЯ (строго соблюдать):
-• Аббревиатуры не переводить и не расшифровывать в тексте:
-  MII (не «зрелые яйцеклетки»), OHSS (не «синдром гиперстимуляции яичников»),
-  ПГТ-А (не «преимплантационное тестирование»), ЭКО, AFC, АМГ — как есть.
-• Эмбрионы и ооциты описывать без слова «единиц» и числительных с единицами
-  измерения: «3 бластоцисты», «2 эуплоидных эмбриона», «8 MII ооцитов» —
-  не «3 единицы бластоцист», не «2 единицы эмбрионов», не «8 единиц MII».
-• Правильные формы: бластоциста / бластоцисты / бластоцист, эмбрион / эмбрионов,
-  ооцит / ооцитов — использовать в зависимости от числа (склонение).
-
 РАЗДЕЛЫ (пропускай при отсутствии данных):
 ### 1. Главный прогноз — объясни level и что он означает для этой пациентки
 ### 2. Сценарии цикла — развилки, риск отмены, что отличает хороший исход от плохого
@@ -536,7 +548,17 @@ _SYSTEM_NARRATOR = """Ты — клинический консультант IVF
 ### 6. Исторические аналоги — что говорят похожие случаи из базы (если есть)
 ### 7. Надёжность прогноза — объясни confidence_grade (A/B/C) и оба источника
          неопределённости (CI_category + agreement) в клиническом смысле
-### 8. Итог — 2–3 предложения: что главное для этого конкретного случая"""
+### 8. Итог — 2–3 предложения: что главное для этого конкретного случая
+
+### 9. Протокол стимуляции и гайдлайны (ТОЛЬКО если в JSON есть protocol_guidance)
+         Свяжи фенотип ответа и риск СГЯ из основного прогноза с блоком
+         protocol_guidance: какой протокол и какой ДИАПАЗОН стартовой дозы
+         предлагает номограмма и почему. Дозу подавай только как ориентир
+         («по номограмме — N–M МЕ»), никогда как назначение. Каждое клиническое
+         утверждение по протоколу подкрепляй ссылкой из
+         protocol_guidance.гайдлайны (поле citation). Числа дозы бери
+         исключительно из этого блока. Если follitropin-дельта = null —
+         не упоминай её."""
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1066,6 +1088,16 @@ def consult(g: Dict[str, Any],
     if num_predict is None:
         num_predict = _STYLE_NUM_PREDICT.get(style)
     ctx = build_narrative_context(g)  # pre-classified compact context
+    # [IMP] narrator cache (CPU win)
+    _cache = _ck = None
+    try:
+        import llm_cache as _cache
+        _ck = _cache.make_key("narrator_v1", ctx, question, model, style)
+        _hit = _cache.get(_ck)
+        if _hit:
+            return _hit
+    except Exception:
+        _cache = _ck = None
     try:
         msg = _chat(_build_messages(ctx, question), model=model,
                     stream=False, temperature=_NARRATOR_TEMP,
@@ -1075,8 +1107,16 @@ def consult(g: Dict[str, Any],
         return _OFFLINE_MSG
     except (requests.RequestException, OllamaError) as exc:
         return f"Ошибка обращения к модели «{model}»: {exc}"
+    if _cache is not None and _ck is not None and text and text != _OFFLINE_MSG:
+        _cache.set(_ck, text)
     if audit:
-        _audit_log(ctx, question, text, model)
+        _fr = None
+        try:
+            import faithfulness as _fc
+            _fr = _fc.check_faithfulness(text, ctx)
+        except Exception:
+            pass
+        _audit_log(ctx, question, text, model, faithfulness=_fr)
     return text
 
 
@@ -1093,6 +1133,19 @@ def consult_stream(g: Dict[str, Any],
     if num_predict is None:
         num_predict = _STYLE_NUM_PREDICT.get(style)
     ctx = build_narrative_context(g)  # pre-classified compact context
+
+    # [IMP] narrator cache (CPU win): identical context → return stored text.
+    try:
+        import llm_cache as _cache
+        _ck = _cache.make_key("narrator_v1", ctx, question, model, style)
+    except Exception:
+        _cache, _ck = None, None
+    if _cache is not None and _ck is not None:
+        _hit = _cache.get(_ck)
+        if _hit:
+            yield _hit
+            return
+
     collected: List[str] = []
     try:
         raw = _chat(_build_messages(ctx, question), model=model,
@@ -1107,14 +1160,26 @@ def consult_stream(g: Dict[str, Any],
     except (requests.RequestException, OllamaError) as exc:
         yield f"Ошибка обращения к модели «{model}»: {exc}"
         return
-    _audit_log(ctx, question, "".join(collected), model)
+    _full = "".join(collected)
+    # [IMP] store in cache (skip error/offline placeholders)
+    if (_cache is not None and _ck is not None and _full
+            and _full != _OFFLINE_MSG and not _full.startswith("Ошибка")):
+        _cache.set(_ck, _full)
+    # [IMP] grounding faithfulness self-check
+    _fr = None
+    try:
+        import faithfulness as _fc
+        _fr = _fc.check_faithfulness(_full, ctx)
+    except Exception:
+        pass
+    _audit_log(ctx, question, _full, model, faithfulness=_fr)
 
 
 # ──────────────────────────────────────────────────────────────────────────
 #  АУДИТ (расширение существующего analytics-пайплайна)
 # ──────────────────────────────────────────────────────────────────────────
 def _audit_log(ctx: Dict[str, Any], question: str, answer: str,
-               model: str) -> None:
+               model: str, faithfulness: Optional[Dict[str, Any]] = None) -> None:
     """Пишет JSONL-запись: вход LLM + выход рядом с прогнозом. Не падает."""
     try:
         os.makedirs(_AUDIT_DIR, exist_ok=True)
@@ -1126,6 +1191,8 @@ def _audit_log(ctx: Dict[str, Any], question: str, answer: str,
             "question": question,
             "answer": answer,
         }
+        if faithfulness is not None:
+            rec["faithfulness"] = faithfulness   # [IMP] grounding self-check
         with open(_AUDIT_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
@@ -1170,35 +1237,27 @@ _SYSTEM_ANALYST = """Ты — аналитик нейросетевого анс
 ФОРМАТ — строго 5 блоков, без введения и послесловия:
 
 [МАТРИЦА АНСАМБЛЯ]
-Таблица строк: L1 MC-prior | L3 KAT-FT | L3 KAN | L5 CSDI | L6 GAT-raw | L6 GAT-ens | L7 BEFE
+Таблица строк: L1 MC-prior | L3 KAT-FT | L3 KAN | L5 CSDI | L6 GAT-ens | L7 BEFE
 Колонки: Слой, P%, CI (низ–верх), Ширина CI, Статус
-Под таблицей одной строкой: разброс ансамбля = max(P%) − min(P%) по всем доступным слоям.
-ВАЖНО: разброс считается по значениям P% из таблицы — НЕ по ширине CI.
 
 [СОГЛАСОВАННОСТЬ]
-1–2 предложения. Формат: «Разброс ансамбля: X пп (max − min). Согласованность: ...»
-Шкала: < 10 пп = высокая, 10–20 пп = средняя, > 20 пп = низкая.
-Если есть явный выброс (один слой отклоняется > 15 пп от остальных) — назвать его.
+1–2 предложения: диапазон P% по ансамблю, оценка согласованности, выброс если есть.
 
 [ИСТОРИЧЕСКИЕ АНАЛОГИ GAT]
-Если kNN_соседи есть — ТАБЛИЦА, не перечисление:
-Строки: каждый сосед. Колонки: Ранг | Сходство | P GNN% | Возраст | AFC | ОКК | MII | Бласт | KPI
-Затем 1–2 предложения:
-  • Если GNN_P_стд < 2% — «прогнозы соседей однородны (стд X%), различия несущественны».
-  • Иначе — только ДЕЛЬТА между соседом с max и min GNN%: какие признаки отличаются?
-    НЕ пересказывать каждого соседа отдельно.
-Если kNN недоступен — «GAT соседи не извлечены».
+Если kNN_соседи есть — 2–3 предложения: сколько реальных похожих циклов из базы,
+диапазон косинусного сходства, диапазон их GNN-прогнозов. Перечисли 2–3 ближайших
+аналога с числовым сходством и ключевыми признаками (возраст, АФЧ, ОКК, MII,
+бластоцисты). Если kNN недоступен — «GAT соседи не извлечены».
 
 [ЯКОРЬ CSDI]
-1–2 предложения: согласован ли L5 с нейросетевыми (L3/L6)?
-Назвать абсолютное расхождение в пп (разница центральных оценок).
-> 10 пп = значимый конфликт механики с NN-прогнозом.
-Если CSDI недоступна — явно отметить.
+1–2 предложения: согласован ли L5 с нейросетевыми (L3/L6)? Направление и величина
+расхождения. Если CSDI недоступна — явно отметить.
 
 [ВЫВОД И НЕОПРЕДЕЛЁННОСТЬ]
-— Наиболее обоснованный диапазон P%: с кратким обоснованием.
-— Ранг неопределённости: ВЫСОКАЯ / СРЕДНЯЯ / НИЗКАЯ (1 предложение с причиной).
-— Если OOD активен — 1 фраза о влиянии на применимость."""
+— Наиболее обоснованный диапазон P% (из наиболее согласованных / лучше
+  откалиброванных моделей) с кратким обоснованием.
+— Ранг неопределённости: ВЫСОКАЯ / СРЕДНЯЯ / НИЗКАЯ (и почему — 1 предложение).
+— Если OOD или риск отсутствия бластоцист влияет на применимость — 1 фраза."""
 
 
 def build_ensemble_context(g: Dict[str, Any]) -> Dict[str, Any]:
@@ -1520,11 +1579,37 @@ _TOOLS = [{
             "required": ["max_future_cycles"],
         },
     },
+}, {
+    # [IMP STIM] second tool — deterministic stimulation protocol/dose.
+    "type": "function",
+    "function": {
+        "name": "recommend_stimulation_protocol",
+        "description": ("Детерминированно рассчитать по номограмме фенотип ответа, "
+                        "риск СГЯ, предлагаемый протокол, целевой выход ооцитов и "
+                        "ДИАПАЗОН стартовой дозы гонадотропина, плюс сопоставленные "
+                        "опубликованные рекомендации. Поддержка решения, НЕ назначение."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "protocol_pref": {"type": "string",
+                    "description": "auto | antagonist | agonist (по умолчанию auto)."},
+            },
+            "required": [],
+        },
+    },
 }]
 
 
 def _execute_tool(name: str, args: Dict[str, Any], g: Dict[str, Any]) -> str:
     """Выполняет инструмент ВАШИМ кодом и возвращает результат строкой."""
+    # [IMP STIM]
+    if name == "recommend_stimulation_protocol":
+        from protocol_guidance import build_protocol_guidance
+        gg = dict(g)
+        gg["protocol_pref"] = args.get("protocol_pref", "auto")
+        block = build_protocol_guidance(gg)
+        return json.dumps(block or {"error": "insufficient_inputs"},
+                          ensure_ascii=False)
     if name == "run_trp_simulation":
         from trp_engine import compute_trp, TRPInput
         res = g.get("res") or {}

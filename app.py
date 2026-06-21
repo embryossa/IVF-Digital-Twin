@@ -792,12 +792,9 @@ st.sidebar.title("IVF Digital Twin v7.0")
 st.sidebar.caption("from in vitro to in silico")
 st.sidebar.markdown("---")
 
-# ── Краткий отчёт для пациента (модуль patient_brief, опционально) ──────
-_root_files = os.listdir(_BASE_DIR)
-_BRIEF_AVAILABLE = (
-    "patient_brief.py" in _root_files
-    or any(name.startswith("patient_brief") and name.endswith(".pyd")
-           for name in _root_files)
+# ── Краткий отчёт для пациента (модуль patient_brief.py, опционально) ──────
+_BRIEF_AVAILABLE = os.path.exists(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "patient_brief.py")
 )
 if _BRIEF_AVAILABLE:
     # Краткий режим — по умолчанию. Расширенный включается кнопкой в отчёте.
@@ -968,12 +965,10 @@ def get_csdi_model():
         return None
     for _d in _CSDI_MODEL_DIRS:
         _cfg = os.path.join(_d, "config.json")
-        _cfg_enc = _cfg + ".enc"
         # Accept either plain .pt or encrypted .pt.enc
         _wts_plain = os.path.join(_d, "csdi_weights.pt")
         _wts_enc   = os.path.join(_d, "csdi_weights.pt.enc")
-        if ((os.path.isfile(_cfg) or os.path.isfile(_cfg_enc))
-                and (os.path.isfile(_wts_plain) or os.path.isfile(_wts_enc))):
+        if os.path.isfile(_cfg) and (os.path.isfile(_wts_plain) or os.path.isfile(_wts_enc)):
             try:
                 return EmbryoHybridV3.load(_d)
             except Exception as _e:
@@ -1328,14 +1323,9 @@ if _BEFE_OK:
     # детектор просто выключен, без ошибок.
     if "_befe_ood_stats" not in st.session_state:
         _ood_npz = os.path.join(_BASE_DIR, "models", "befe_ood_stats.npz")
-        _ood_path = _ood_npz if os.path.exists(_ood_npz) else _ood_npz + ".enc"
-        if os.path.exists(_ood_path):
+        if os.path.exists(_ood_npz):
             try:
-                if _ood_path.endswith(".enc"):
-                    from crypt_engine import load_encrypted_numpy
-                    _z = load_encrypted_numpy(_ood_path, allow_pickle=True)
-                else:
-                    _z = np.load(_ood_path, allow_pickle=True)
+                _z = np.load(_ood_npz, allow_pickle=True)
                 st.session_state["_befe_ood_stats"] = {
                     "clinical_mu":      _z["clinical_mu"],
                     "clinical_cov_inv": _z["clinical_cov_inv"],
@@ -2789,6 +2779,7 @@ with tab_llm:
             st.rerun()
 
         # ── Первый запуск: начальный анализ ───────────────────────────────
+        _just_streamed = False                       # [FIX] анти-дубль вывода LLM
         if _llm_start_btn:
             st.session_state["_llm_chat"] = []   # сбрасываем при новом запуске
             st.session_state["_llm_tier_used"] = _llm_tier
@@ -2808,9 +2799,15 @@ with tab_llm:
             st.session_state["_llm_chat"].append(
                 {"role": "assistant", "content": _response}
             )
+            _just_streamed = True                    # [FIX] ответ уже показан вживую
 
         # ── Отображение истории диалога ───────────────────────────────────
-        for _msg in st.session_state["_llm_chat"]:
+        # [FIX] На старте ответ уже отрисован через write_stream выше — не
+        # дублируем его в истории на ЭТОМ же прогоне. На последующих перерисовках
+        # _just_streamed = False, и история показывает ответ один раз.
+        _chat_to_show = (st.session_state["_llm_chat"][:-1]
+                         if _just_streamed else st.session_state["_llm_chat"])
+        for _msg in _chat_to_show:
             _avatar = "🤖" if _msg["role"] == "assistant" else "👨‍⚕️"
             with st.chat_message(_msg["role"], avatar=_avatar):
                 st.markdown(_msg["content"])
