@@ -8,10 +8,14 @@ anyone who obtained a copy before the change.
 
 | Period | Commits | License | Status |
 |---|---|---|---|
-| 2026-05-15 → 2026-07-29 | up to and including `f5d21c007c9debd1f2362c27f90ad261e60cfd33` | Apache License 2.0 | Frozen, still valid for those copies |
-| 2026-07-30 → present | everything after `f5d21c00` | PolyForm Noncommercial 1.0.0 | Current |
+| 2026-05-15 → 2026-07-29 | up to and including tag **`v6.2-apache`** (`dbb7587`) | Apache License 2.0 | Frozen, still valid for those copies |
+| 2026-07-30 → present | everything after `v6.2-apache` | PolyForm Noncommercial 1.0.0 | Current |
 
-The last Apache-licensed state is tagged **`v6.2-apache`**.
+The cut-off is identified by the **tag**, not a raw SHA. History was rewritten
+on 2026-07-30 to purge a leaked key (see [SECURITY.md](SECURITY.md)), so
+pre-rewrite commit hashes — including the `f5d21c00` that earlier drafts of
+this file cited — no longer resolve. The tag survived the rewrite and points at
+the equivalent commit.
 
 ## What this means in practice
 
