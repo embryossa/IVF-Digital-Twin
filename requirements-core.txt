@@ -1,0 +1,28 @@
+# IVF Digital Twin — core dependencies (L1, L2, L4 + tests)
+#
+# This is the minimum needed to import src/ivf_digital_twin.py and run the
+# test suite. It deliberately excludes torch and everything that depends on
+# it, so CI and reviewers can exercise the mechanistic pipeline without a
+# ~200 MB download and version-matched PyTorch Geometric wheels.
+#
+#   pip install -r requirements-core.txt
+#
+# For the neural layers (L3 KAT, L5 CSDI, L6 GAT) install requirements.txt
+# and requirements_nn.txt as described in README.md.
+
+numpy>=1.24.0
+scipy>=1.10.0
+pandas>=2.0.0
+scikit-learn==1.5.0
+lightgbm
+joblib>=1.2.0,<2.0.0
+
+# Plotting — imported at module level by the core pipeline
+plotly>=5.14.0
+matplotlib>=3.8.0
+kaleido>=0.2.1
+
+# PDF export — pdfkit is imported at module level; the wkhtmltopdf binary it
+# drives is only needed when a report is actually rendered.
+pdfkit>=1.0.0
+reportlab>=4.0.0

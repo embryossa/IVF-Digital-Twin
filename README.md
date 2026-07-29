@@ -330,7 +330,20 @@ Possible cause: non-standard clinical/embryological ratio.
 2. Double-click **`INSTALL.bat`** — creates `.venv`, installs everything including PyTorch and PyTorch Geometric.
 3. Double-click **`Start_IVF_Twin.bat`** — opens `http://localhost:8501`.
 
-### Any platform — manual
+### Core only — no PyTorch
+
+To read the code, run the test suite, or exercise the mechanistic pipeline
+(L1 + L2 + L4) without a 200 MB PyTorch download:
+
+```bash
+pip install -r requirements-core.txt
+pytest tests -v
+```
+
+This is what CI runs. The neural layers report "model not loaded" and
+everything else works.
+
+### Any platform — manual, full stack
 
 ```bash
 python -m venv .venv

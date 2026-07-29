@@ -1,3 +1,6 @@
+# Copyright 2025-2026 Sergei Sergeev
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# Commercial use requires a separate license: see COMMERCIAL-LICENSE.md
 """Export the public source-available repository from the private working tree.
 
 The public repo (github.com/embryossa/IVF-Digital-Twin) is a filtered subset of
@@ -64,6 +67,7 @@ INCLUDE = [
     "clinic_config.template.json",
     # Packaging
     "requirements.txt",
+    "requirements-core.txt",
     "requirements_nn.txt",
     "setup.py",
     # Launchers
