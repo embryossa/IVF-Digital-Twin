@@ -1,0 +1,86 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Secrets and proprietary modules — highest priority, never negate these
+# ─────────────────────────────────────────────────────────────────────────────
+src/crypt_engine.py       # embeds the model decryption key; commercial repo only
+*.lic
+*.key
+*.pem
+.env
+.env.local
+.env.*
+
+# Real clinic configuration (aggregate outcomes of an identifiable clinic).
+# clinic_config.template.json ships instead.
+clinic_config.json
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Patient data — nothing derived from a real cycle leaves the machine
+# ─────────────────────────────────────────────────────────────────────────────
+# Spreadsheets are how patient rows have historically arrived. Blanket-ignored;
+# add a specific negation if you genuinely need to publish a blank template.
+*.xlsx
+*.xls
+*.csv
+!data/sample/sample_patients.csv
+
+# Everything the pipeline writes: prediction logs, batch outputs, LLM caches.
+# These carry patient-identifying values (ФИО in OPU_table_filled_*.xlsx and
+# dt_predictions.csv among others).
+results/
+dt_analytics_data/
+dt_llm_cache/
+narrator_qa/results/
+*.parquet
+*.jsonl
+ivf_report_*.pdf
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Trained model weights — the commercial asset, distributed separately
+# ─────────────────────────────────────────────────────────────────────────────
+*.pt
+*.pth
+*.joblib
+*.pkl
+*.npz
+*.onnx
+*.safetensors
+!data/sample/*.pkl
+releases/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Python
+# ─────────────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv
+venv/
+env/
+ENV/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Editors, OS, scratch
+# ─────────────────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.log
+logs/
+*.bak
+*.bak_*

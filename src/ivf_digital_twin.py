@@ -1,3 +1,6 @@
+# Copyright 2025-2026 Sergei Sergeev
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# Commercial use requires a separate license: see COMMERCIAL-LICENSE.md
 # ============================================================
 # IVF DIGITAL TWIN PLATFORM v6.2
 # ZINB Stage 1 + Covariate-Dependent Bayesian Prior
@@ -2086,18 +2089,6 @@ def stage9_cluster_analysis(patient: PatientInput, res: Dict,
         "attempt_number":    attempt_number,
         "follicles_used":    follicles if follicles is not None else int(patient.afc),
     }
-
-
-
-    """
-    P(at least k pregnancies in this cycle), k = 1..max_k.
-    Used for the Herasight-style "chances of pregnancies" chart.
-    """
-    n_preg = res["sim_n_preg"]
-    p_at_least_k = []
-    for k in range(1, max_k + 1):
-        p_at_least_k.append(float(np.mean(n_preg >= k)))
-    return p_at_least_k
 
 
 # ============================================================

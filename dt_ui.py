@@ -1,3 +1,6 @@
+# Copyright 2025-2026 Sergei Sergeev
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# Commercial use requires a separate license: see COMMERCIAL-LICENSE.md
 """
 dt_ui.py — IVF Digital Twin v7.0 · Дизайн-система для Streamlit
 
@@ -563,7 +566,7 @@ def reliability_bar(score: int, band: str) -> None:
 
     band: 'High' | 'Moderate' | 'Low'
     """
-    band_ru   = {"High": "Высокая", "Moderate": "Умеренная", "Low": "Низкая"}
+    band_ru   = {"High": "Высокая", "Moderate": "Умеренная", "Low": "Ограниченная"}
     bar_color = {"High": "#1E8449", "Moderate": "#D97706", "Low": "#C0392B"}
     col  = bar_color.get(band, BLUE)
     ru   = band_ru.get(band, band)
@@ -683,9 +686,9 @@ def befe_card_header(posterior_pct: float, ci_low_pct: float, ci_high_pct: float
             {posterior_pct:.0f}%</span>
           <div>
             <div style="font-size:12px;color:#5A6B7B;font-weight:500">
-              Posterior P(беременность)</div>
+              Итоговая P(беременность)</div>
             <div style="font-size:13px;color:#2471A3;font-weight:600">
-              95% ДИ: {ci_low_pct:.0f}% – {ci_high_pct:.0f}%</div>
+              Исторический коридор клиники: {ci_low_pct:.0f}% – {ci_high_pct:.0f}%</div>
           </div>
         </div>""",
         unsafe_allow_html=True,

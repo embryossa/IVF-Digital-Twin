@@ -1,3 +1,6 @@
+# Copyright 2025-2026 Sergei Sergeev
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# Commercial use requires a separate license: see COMMERCIAL-LICENSE.md
 """
 llm_consultant.py — IVF Digital Twin v7.0
 LLM-слой консультанта поверх ансамбля. Offline-safe (Ollama localhost).
@@ -267,24 +270,46 @@ def build_interpretation_flags(g: Dict[str, Any]) -> Dict[str, Any]:
     ood_sub = flags.get("OOD_subspace", "")
     ci_cat  = flags.get("CI_category", "")
     agr_cat = flags.get("agreement_category", "")
+    # [FIX grade] Раньше при ПОЛНОМ отсутствии сигналов (нет BEFE → ci_cat и
+    # agr_cat пустые строки, rel is None) условие ниже оказывалось истинным и
+    # пациентка получала «B». То есть отсутствие доказательств выдавалось за
+    # умеренную надёжность, и нарратор объяснял это врачу как результат оценки.
+    # Теперь такой случай получает явный insufficient_evidence.
+    _has_signal = bool(ci_cat) or bool(agr_cat) or (rel is not None)
     # [CALIB] OOD no longer forces C unconditionally: a mild single-subspace OOD
     # with acceptable reliability is treated as caution (grade B), while dual-
     # subspace OOD or genuinely low reliability still yields C. Reliability cut-
     # points lowered (A: 70->60, B: 45->35) to match the recalibrated bands.
-    if ood and (ood_sub == "clinical+embryological"
-                or (rel is not None and rel < 35)):
+    if not _has_signal:
+        flags["confidence_grade"] = "insufficient_evidence"
+        flags["confidence_grade_reason"] = "no_uncertainty_signal"
+    elif ood and (ood_sub == "clinical+embryological"
+                  or (rel is not None and rel < 35)):
         flags["confidence_grade"] = "C"
+        flags["confidence_grade_reason"] = (
+            "dual_subspace_OOD" if ood_sub == "clinical+embryological"
+            else "low_reliability")
     elif (not ood
           and ci_cat == "low_statistical_uncertainty"
           and agr_cat == "high_model_agreement"
           and (rel is None or rel >= 60)):
         flags["confidence_grade"] = "A"
+        flags["confidence_grade_reason"] = "narrow_CI_and_model_agreement"
     elif (ci_cat != "high_statistical_uncertainty"
           and agr_cat != "high_model_disagreement"
           and (rel is None or rel >= 35)):
         flags["confidence_grade"] = "B"
+        flags["confidence_grade_reason"] = (
+            "single_subspace_OOD" if ood else
+            "moderate_CI" if ci_cat == "moderate_statistical_uncertainty" else
+            "moderate_model_agreement" if agr_cat == "moderate_model_agreement"
+            else "acceptable_but_not_ideal")
     else:
         flags["confidence_grade"] = "C"
+        flags["confidence_grade_reason"] = (
+            "wide_CI" if ci_cat == "high_statistical_uncertainty" else
+            "model_disagreement" if agr_cat == "high_model_disagreement"
+            else "low_reliability")
 
     # ── Риск OHSS ─────────────────────────────────────────────────────────
     # Пороги откалиброваны консервативно: LLM не должна переоценивать риски.
@@ -465,23 +490,65 @@ def build_narrative_context(g: Dict[str, Any]) -> Dict[str, Any]:
             c70   = (_math.ceil(k70 / exp_e) if k70 and exp_e and exp_e > 0 else None)
         except: c50 = c70 = None
         _mii_target = (mt.get(min(k50 or 2, max(eb.get("k_targets", [2])))) or {}).get(0.80)
+
+        # [FIX units] Имена полей-СЧЁТЧИКОВ несут суффикс `_n`. Без него модель
+        # угадывала единицу и путала штуки с процентами: наблюдалось
+        # «euploids_expected: 0.1» → «вероятность получения эуплоидных
+        # эмбрионов 0.1%». Проценты по-прежнему помечены суффиксом `_pct`.
+        # [FIX cap] Число циклов обрезаем: ceil(1/0.04)=25 арифметически верно,
+        # но как клиническое утверждение бессмысленно — 25 стимуляций никто не
+        # проводит, а нарратор честно пересказывал это как план.
+        _CYCLE_CAP = 6
+
+        def _cycles_label(c):
+            if c is None:
+                return None
+            return c if c <= _CYCLE_CAP else f"> {_CYCLE_CAP} (накопление нереалистично)"
+
         ctx["banking_mii"] = {
-            "MII_this_cycle":         int(eb.get("patient_mii_median") or 0) or None,
-            "euploids_expected":      round(exp_e, 1) if exp_e else None,
-            "euploids_for_P50":       k50,
-            "cycles_for_P50":         c50,
-            "cycles_for_P70":         c70,
-            "mii_target_80pct":       int(_mii_target) if _mii_target else None,
+            "MII_this_cycle_n":       int(eb.get("patient_mii_median") or 0) or None,
+            "euploids_expected_n":    round(exp_e, 1) if exp_e else None,
+            "euploids_for_P50_n":     k50,
+            "cycles_for_P50_n":       _cycles_label(c50),
+            "cycles_for_P70_n":       _cycles_label(c70),
+            "mii_target_80pct_n":     int(_mii_target) if _mii_target else None,
             "strategy":               flags.get("banking_strategy"),
             "age_urgency":            flags.get("banking_age_urgency"),
+            "_единицы":               "поля с суффиксом _n — ШТУКИ (ооциты, "
+                                      "эмбрионы, циклы), не проценты",
         }
 
     # ── Надёжность прогноза с итоговой оценкой ────────────────────────────
+    # [FIX reason] Грейд идёт вместе с ПРИЧИНОЙ. Раньше наружу отдавалась только
+    # буква, и нарратор достраивал объяснение сам — наблюдалось «грейд C
+    # обусловлен несогласием моделей», тогда как C был выставлен двойным OOD.
+    # Причину отдаём готовой фразой по-русски: машинный токен вида
+    # `moderate_CI` модель цитировала дословно, и он попадал в текст для врача.
+    _REASON_RU = {
+        "no_uncertainty_signal":        "оценивать надёжность не на чем — "
+                                        "ни ДИ, ни разброса ансамбля нет",
+        "dual_subspace_OOD":            "случай вне распределения сразу по двум "
+                                        "подпространствам — клиническому и "
+                                        "эмбриологическому",
+        "single_subspace_OOD":          "случай вне распределения по одному "
+                                        "подпространству",
+        "low_reliability":              "низкая собственная надёжность BEFE",
+        "wide_CI":                      "широкий доверительный интервал",
+        "model_disagreement":           "оценщики ансамбля заметно расходятся",
+        "moderate_CI":                  "умеренная статистическая неопределённость",
+        "moderate_model_agreement":     "умеренное согласие оценщиков ансамбля",
+        "narrow_CI_and_model_agreement": "узкий доверительный интервал при "
+                                         "согласии оценщиков",
+        "acceptable_but_not_ideal":     "приемлемо, но без запаса",
+    }
+    _reason = flags.get("confidence_grade_reason")
     ctx["prediction_confidence"] = {
-        "grade":          flags.get("confidence_grade"),       # A / B / C
+        "grade":          flags.get("confidence_grade"),   # A / B / C / insufficient_evidence
+        "grade_reason":   _REASON_RU.get(_reason, _reason),
         "CI_category":    flags.get("CI_category"),
         "agreement":      flags.get("agreement_category"),
-        "BEFE_reliability": getattr(befe, "reliability", None) if befe else None,
+        "BEFE_reliability_0_100": (getattr(befe, "reliability", None)
+                                   if befe else None),
         "BEFE_band":      getattr(befe, "reliability_band", None) if befe else None,
         "OOD_status":     flags.get("OOD_status"),
         "OOD_subspace":   flags.get("OOD_subspace"),
@@ -492,17 +559,35 @@ def build_narrative_context(g: Dict[str, Any]) -> Dict[str, Any]:
     if nb_full:
         sv = nb_full.get("сводка") or {}
         top = (nb_full.get("соседи") or [{}])[0]
+        _med = sv.get("GNN_P_медиана_%")
+        _main = ctx.get("main_forecast", {}).get("P_pct")
+        # [FIX signal] Расхождение «аналоги vs главный прогноз» считаем в Python
+        # и подаём готовым числом. Раньше нарратор в кратком режиме просто
+        # опускал раздел аналогов, и врач не узнавал, что независимая модель по
+        # похожим циклам даёт заметно другую оценку (наблюдалось 22.1% vs 61%).
+        _delta = (round(_med - _main, 1)
+                  if isinstance(_med, (int, float)) and isinstance(_main, (int, float))
+                  else None)
         ctx["historical_analogues"] = {
-            "n":                  sv.get("число_соседей"),
+            "n_neighbours":       sv.get("число_соседей"),
             "similarity_range":   (f"{sv.get('косинусное_сходство_мин')}–"
                                    f"{sv.get('косинусное_сходство_макс')}"),
             "GNN_P_range_pct":    f"{sv.get('GNN_P_мин_%')}–{sv.get('GNN_P_макс_%')}",
-            "GNN_P_median_pct":   sv.get("GNN_P_медиана_%"),
+            "GNN_P_median_pct":   _med,
+            "vs_main_forecast_pp": _delta,
             "closest": {
                 "similarity":     top.get("косинусное_сходство"),
                 "GNN_P_pct":      top.get("GNN_P_беременность_%"),
                 **(top.get("признаки") or {}),
             },
+            # [FIX] Пояснение было в build_clinical_context и потерялось при
+            # переходе на компактный контекст. Без него модель писала «это
+            # подтверждает ожидаемую динамику» — вывод о пациентке из прогноза
+            # для другого цикла.
+            "_смысл": ("GNN_P — прогноз модели для СОСЕДНЕГО цикла, а не его "
+                       "наблюдаемый исход и не доказательство для этой "
+                       "пациентки. vs_main_forecast_pp — насколько медиана "
+                       "аналогов отличается от главного прогноза, в пп."),
         }
 
     # [IMP STIM] Protocol/guideline grounding — deterministic, graceful fallback.
@@ -512,11 +597,36 @@ def build_narrative_context(g: Dict[str, Any]) -> Dict[str, Any]:
         from protocol_guidance import build_protocol_guidance
         _pg = build_protocol_guidance(g)
         if _pg:
-            ctx["protocol_guidance"] = _pg
+            # Полная библиография не нужна модели — она печатает короткий тег
+            # из `src`. Легенда остаётся доступной вызывающему коду (UI/PDF)
+            # через build_protocol_guidance(), но в промпт не идёт.
+            _pg_for_llm = {k: v for k, v in _pg.items() if k != "источники"}
+            ctx["protocol_guidance"] = _pg_for_llm
     except Exception:
         pass  # feature optional; never break the existing narrator
 
-    return ctx
+    return _prune_empty(ctx)
+
+
+def _prune_empty(obj: Any) -> Any:
+    """Рекурсивно выбрасывает None и пустые контейнеры из контекста нарратора.
+
+    Зачем: блоки вида {"label": null, "confidence_pct": null} попадали в промпт
+    как есть — это и лишние токены (на CPU ≈0.17 с за токен), и приглашение
+    домыслить отсутствующее. Ключ, которого нет, модель не обсуждает; ключ со
+    значением null она склонна комментировать.
+    """
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            pv = _prune_empty(v)
+            if pv is None or pv == {} or pv == []:
+                continue
+            out[k] = pv
+        return out
+    if isinstance(obj, list):
+        return [_prune_empty(v) for v in obj if _prune_empty(v) is not None]
+    return obj
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -531,34 +641,74 @@ _SYSTEM_NARRATOR = """Ты — клинический консультант IVF
 клинический нарратив, объясняющий эти категории врачу.
 
 ПРАВИЛА (нарушение недопустимо):
-1. Числа — ТОЛЬКО из JSON. Ничего не изобретать.
-2. НЕ переклассифицировать. Если JSON говорит "moderate" — объясняй "moderate".
-3. Не назначай лечение и не формулируй директивные рекомендации.
+1. Числа — ТОЛЬКО из JSON. Каждое число должно относиться к тому показателю,
+   из поля которого оно взято: не называй 2PN «зрелыми ооцитами», прогноз
+   соседа — исходом пациентки, счётчик — процентом. Имена полей при этом
+   НЕ ПИШИ: «12.1%», а не «12.1% [P_pct]». Соответствие должно быть по смыслу,
+   а не подписью.
+   Поля с суффиксом _pct — проценты; поля с суффиксом _n — ШТУКИ (ооциты,
+   эмбрионы, циклы), их нельзя подавать как проценты и называть вероятностью.
+2. P_pct, CI_low_pct, CI_high_pct и GNN_P — вероятность наступления клинической
+   БЕРЕМЕННОСТИ на перенос. Это НЕ живорождение. Слово «живорождение» допустимо
+   только внутри цитаты гайдлайна, где оно стоит в самом источнике.
+3. НЕ переклассифицировать. Если JSON говорит "moderate" — объясняй "moderate",
+   даже если аналоги или твоё впечатление от чисел говорят иное.
+4. Не назначай лечение и не формулируй директивные рекомендации.
    Используй: «можно рассмотреть», «имеет смысл обсудить», «стоит учитывать»,
-   «может быть основанием для». Не используй: «показан», «провести», «назначить».
-4. Тон: коллега-консультант, активный залог, без канцеляризмов.
-5. Отвечай на русском. Термины BEFE, MII, OHSS, ПГТ-А — свободно.
+   «может быть основанием для». Не используй от своего лица: «показан»,
+   «провести», «назначить», «рекомендуется». Текст гайдлайна цитировать как
+   есть — можно.
+5. Технические метки не выводи. high_model_agreement, in_distribution,
+   immediate_transfer_feasible, poor_responder, P_no_blast_pct и т.п. —
+   переводи в русскую клиническую фразу. В тексте не должно быть snake_case
+   и имён полей JSON.
+6. Квадратные скобки в тексте — ТОЛЬКО для ссылки на гайдлайн, коротким тегом
+   ровно как в поле src: [ESHRE2025], [ASRM2024]. Ничего другого в квадратные
+   скобки не ставь — ни имён полей, ни пояснений. Круглые скобки для ссылок не
+   используй, библиографию не переписывай, источники не придумывай.
+7. Тон: коллега-консультант, активный залог, без канцеляризмов
+   («следует отметить», «данный показатель свидетельствует»).
+   Отвечай на русском. Термины BEFE, MII, OHSS, ПГТ-А — свободно.
+8. Факт — то, что в JSON. Причины и механизмы подавай как гипотезу
+   («вероятно», «это профиль, который обычно»). Значение у границы категории
+   называй пограничным, а не провальным.
 
-РАЗДЕЛЫ (пропускай при отсутствии данных):
-### 1. Главный прогноз — объясни level и что он означает для этой пациентки
-### 2. Сценарии цикла — развилки, риск отмены, что отличает хороший исход от плохого
-### 3. Фенотип ответа — ожидания от стимуляции, нюансы протокола
-### 4. Риски — для каждого риска используй management из JSON как ориентир формулировки
-### 5. Банкинг MII — логика strategy, возрастная срочность, цепочка MII→эуплоиды
-### 6. Исторические аналоги — что говорят похожие случаи из базы (если есть)
-### 7. Надёжность прогноза — объясни confidence_grade (A/B/C) и оба источника
-         неопределённости (CI_category + agreement) в клиническом смысле
-### 8. Итог — 2–3 предложения: что главное для этого конкретного случая
+ЗАГОЛОВКИ РАЗДЕЛОВ пиши ровно так, как они названы ниже, без пояснений после
+названия. Пояснение — это инструкция тебе, а не часть текста для врача.
+Раздел, для которого в JSON нет данных, пропускай молча.
 
-### 9. Протокол стимуляции и гайдлайны (ТОЛЬКО если в JSON есть protocol_guidance)
-         Свяжи фенотип ответа и риск СГЯ из основного прогноза с блоком
-         protocol_guidance: какой протокол и какой ДИАПАЗОН стартовой дозы
-         предлагает номограмма и почему. Дозу подавай только как ориентир
-         («по номограмме — N–M МЕ»), никогда как назначение. Каждое клиническое
-         утверждение по протоколу подкрепляй ссылкой из
-         protocol_guidance.гайдлайны (поле citation). Числа дозы бери
-         исключительно из этого блока. Если follitropin-дельта = null —
-         не упоминай её."""
+### Суть
+        3–4 предложения, которые врач прочитает первыми: прогноз и его уровень,
+        главный риск, насколько можно опираться на цифру, что дальше.
+### 1. Прогноз
+        объясни level и что он означает для этой пациентки
+### 2. Сценарии цикла
+        развилки, риск отмены, что отличает хороший исход от плохого
+### 3. Фенотип ответа
+        ожидания от стимуляции, нюансы протокола
+### 4. Риски
+        для каждого риска используй management из JSON как ориентир формулировки
+### 5. Банкинг MII
+        логика strategy, возрастная срочность, цепочка MII→эуплоиды
+### 6. Исторические аналоги
+        GNN_P — прогноз модели для СОСЕДНЕГО цикла, а не его исход и не
+        доказательство для этой пациентки. Говори «у ближайшего аналога».
+        Не пиши «это подтверждает». Если vs_main_forecast_pp заметно отличается
+        от нуля — назови расхождение прямо, но главный прогноз не меняй.
+### 7. Надёжность прогноза
+        объясни grade и его grade_reason — именно ту причину, что указана в
+        JSON, не подставляй свою. Разведи два источника неопределённости:
+        CI_category (статистическая) и agreement (модельная).
+        grade = insufficient_evidence означает, что оценивать надёжность не на
+        чем: так и скажи, не выдавай это за умеренную надёжность.
+### 8. Протокол стимуляции и гайдлайны
+        только если в JSON есть protocol_guidance. Свяжи фенотип ответа и риск
+        СГЯ с номограммой: какой протокол и какой ДИАПАЗОН стартовой дозы она
+        предлагает и почему. Дозу подавай только как ориентир
+        («по номограмме — N–M МЕ»), никогда как назначение, и только из этого
+        блока. Если в 'согласование_СГЯ' поле 'согласуются' = false — проговори
+        обе оценки риска и их природу. Если фоллитропин-дельта отсутствует —
+        не упоминай его."""
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -921,6 +1071,43 @@ _OFFLINE_MSG = ("Локальная LLM недоступна (Ollama не зап
                 f"{OLLAMA_HOST}). Запустите `ollama serve` и убедитесь, что "
                 "модель загружена (`ollama list`).")
 
+_TIMEOUT_MSG = (
+    "Модель не успела ответить за {sec} с. Ollama работает — не хватило времени. "
+    "На CPU это обычная ситуация для больших моделей: полный нарратив 12B "
+    "занимает ~19 минут. Что можно сделать: выбрать стиль «concise», взять "
+    "модель полегче (medgemma1.5) или поднять DT_LLM_TIMEOUT_READ."
+)
+
+# Результат последней проверки достоверности — чтобы UI/батч мог показать
+# предупреждение, а не только записать его в аудит-лог, куда в момент приёма
+# никто не смотрит. Читать: llm_consultant.LAST_FAITHFULNESS.
+LAST_FAITHFULNESS: Optional[Dict[str, Any]] = None
+
+
+def _publish_faithfulness(report: Optional[Dict[str, Any]]) -> None:
+    global LAST_FAITHFULNESS
+    LAST_FAITHFULNESS = report
+
+
+def faithfulness_warning() -> Optional[str]:
+    """Человекочитаемое предупреждение, если последняя генерация не прошла
+    сверку с контекстом. None — если всё чисто или проверка не выполнялась."""
+    rep = LAST_FAITHFULNESS
+    if not rep or not rep.get("checked") or rep.get("ok", True):
+        return None
+    parts = []
+    if rep.get("dose_mismatches"):
+        parts.append("в тексте есть доза вне диапазона номограммы: "
+                     + "; ".join(rep["dose_mismatches"]))
+    if rep.get("leaked_ids"):
+        parts.append("в текст попали внутренние идентификаторы утверждений: "
+                     + ", ".join(rep["leaked_ids"]))
+    if rep.get("unknown_citations"):
+        parts.append("ссылки, которых нет в переданном корпусе: "
+                     + ", ".join(rep["unknown_citations"]))
+    return ("Автопроверка нарратива нашла расхождение с исходными данными — "
+            + "; ".join(parts) + ". Сверьтесь с блоком протокола.")
+
 
 # ──────────────────────────────────────────────────────────────────────────
 #  TIER 0 — НАРРАТОР
@@ -937,6 +1124,48 @@ _QUESTION_CONCISE = (
     "сценарий цикла, главный риск и как его распознать, логика банкинга одной "
     "фразой, неопределённость ансамбля количественно."
 )
+
+
+# [FIX question] Статический запрос требовал «исторические аналоги GAT» и
+# «неопределённость ансамбля» ВСЕГДА — даже когда этих блоков в контексте нет.
+# Пользовательское сообщение идёт последним и перебивало системное правило
+# «пропускай при отсутствии данных»: наблюдалось, что при пустом banking_mii
+# модель всё равно писала раздел банкинга без единого числа. Теперь запрос
+# собирается из фактически присутствующих ключей.
+_QUESTION_PARTS = [
+    ("main_forecast",         "главный прогноз с объяснением",
+                              "прогноз с объяснением"),
+    ("cycle",                 "сценарии развития цикла",
+                              "ключевой сценарий цикла"),
+    ("response_phenotype",    "фенотип ответа",                 None),
+    ("risks",                 "клиническая картина рисков",
+                              "главный риск и как его распознать"),
+    ("banking_mii",           "логика и стратегия банкинга",
+                              "логика банкинга одной фразой"),
+    ("historical_analogues",  "исторические аналоги GAT",       None),
+    ("prediction_confidence", "природа неопределённости ансамбля",
+                              "надёжность прогноза количественно"),
+    ("protocol_guidance",     "протокол стимуляции и гайдлайны",
+                              "протокол и диапазон стартовой дозы"),
+]
+
+
+def build_question(ctx: Dict[str, Any], style: str = "full") -> str:
+    """Запрос под фактический состав контекста (пустые разделы не просим)."""
+    concise = (style == "concise")
+    parts = []
+    for key, full_label, short_label in _QUESTION_PARTS:
+        if not ctx.get(key):
+            continue
+        label = (short_label or full_label) if concise else full_label
+        if label:
+            parts.append(label)
+    if not parts:
+        return (_QUESTION_CONCISE if concise else _DEFAULT_QUESTION)
+    head = ("Краткое клиническое резюме для врача: " if concise
+            else "Составь развёрнутое клиническое резюме: ")
+    tail = ("" if concise else ", итоговые клинические соображения")
+    return head + ", ".join(parts) + tail + "."
 
 # Подсказки по длине — добавляются к запросу перед отправкой.
 _STYLE_HINT = {
@@ -1082,17 +1311,18 @@ def consult(g: Dict[str, Any],
 
     style : "full" — развёрнуто по разделам; "concise" — компактно (быстрее на CPU).
     """
+    ctx = build_narrative_context(g)  # pre-classified compact context
     if question is None:
-        question = (_QUESTION_CONCISE if style == "concise" else _DEFAULT_QUESTION)
+        question = build_question(ctx, style)   # только фактически имеющиеся разделы
     question += _STYLE_HINT.get(style, "")
     if num_predict is None:
         num_predict = _STYLE_NUM_PREDICT.get(style)
-    ctx = build_narrative_context(g)  # pre-classified compact context
-    # [IMP] narrator cache (CPU win)
+    # [IMP] narrator cache (CPU win). Версия ключа поднята до v2: формат
+    # контекста изменился (единицы в именах полей, grade_reason, чистка null).
     _cache = _ck = None
     try:
         import llm_cache as _cache
-        _ck = _cache.make_key("narrator_v1", ctx, question, model, style)
+        _ck = _cache.make_key("narrator_v2", ctx, question, model, style)
         _hit = _cache.get(_ck)
         if _hit:
             return _hit
@@ -1103,19 +1333,25 @@ def consult(g: Dict[str, Any],
                     stream=False, temperature=_NARRATOR_TEMP,
                     num_predict=num_predict, think=_NARRATOR_THINK)
         text = _strip_thinking(msg.get("content", "").strip())
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+    except requests.exceptions.Timeout:
+        # [FIX] Раньше таймаут попадал в одну ветку с ConnectionError и врач
+        # видел «Ollama не запущена», хотя она работает — просто не успела.
+        # Измерено: полный нарратив 12B на CPU ≈ 1124 с при дефолте 1200 с.
+        return _TIMEOUT_MSG.format(sec=_TIMEOUT_READ)
+    except requests.exceptions.ConnectionError:
         return _OFFLINE_MSG
     except (requests.RequestException, OllamaError) as exc:
         return f"Ошибка обращения к модели «{model}»: {exc}"
     if _cache is not None and _ck is not None and text and text != _OFFLINE_MSG:
         _cache.set(_ck, text)
+    _fr = None
+    try:
+        import faithfulness as _fc
+        _fr = _fc.check_faithfulness(text, ctx)
+    except Exception:
+        pass
+    _publish_faithfulness(_fr)
     if audit:
-        _fr = None
-        try:
-            import faithfulness as _fc
-            _fr = _fc.check_faithfulness(text, ctx)
-        except Exception:
-            pass
         _audit_log(ctx, question, text, model, faithfulness=_fr)
     return text
 
@@ -1127,17 +1363,17 @@ def consult_stream(g: Dict[str, Any],
                    style: str = "full",
                    num_predict: Optional[int] = None) -> Iterator[str]:
     """Tier 0: потоковый генератор (для st.write_stream)."""
+    ctx = build_narrative_context(g)  # pre-classified compact context
     if question is None:
-        question = (_QUESTION_CONCISE if style == "concise" else _DEFAULT_QUESTION)
+        question = build_question(ctx, style)   # только фактически имеющиеся разделы
     question += _STYLE_HINT.get(style, "")
     if num_predict is None:
         num_predict = _STYLE_NUM_PREDICT.get(style)
-    ctx = build_narrative_context(g)  # pre-classified compact context
 
     # [IMP] narrator cache (CPU win): identical context → return stored text.
     try:
         import llm_cache as _cache
-        _ck = _cache.make_key("narrator_v1", ctx, question, model, style)
+        _ck = _cache.make_key("narrator_v2", ctx, question, model, style)
     except Exception:
         _cache, _ck = None, None
     if _cache is not None and _ck is not None:
@@ -1154,7 +1390,10 @@ def consult_stream(g: Dict[str, Any],
         for piece in _filter_thinking_stream(raw):
             collected.append(piece)
             yield piece
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+    except requests.exceptions.Timeout:
+        yield _TIMEOUT_MSG.format(sec=_TIMEOUT_READ)
+        return
+    except requests.exceptions.ConnectionError:
         yield _OFFLINE_MSG
         return
     except (requests.RequestException, OllamaError) as exc:
@@ -1172,6 +1411,10 @@ def consult_stream(g: Dict[str, Any],
         _fr = _fc.check_faithfulness(_full, ctx)
     except Exception:
         pass
+    # Результат доступен вызывающему коду как llm_consultant.LAST_FAITHFULNESS /
+    # faithfulness_warning() — чтобы предупреждение можно было показать врачу,
+    # а не только записать в аудит-лог.
+    _publish_faithfulness(_fr)
     _audit_log(ctx, question, _full, model, faithfulness=_fr)
 
 
@@ -1222,11 +1465,11 @@ _SYSTEM_ANALYST = """Ты — аналитик нейросетевого анс
 1. Используй ТОЛЬКО числа из предоставленного JSON. Ничего не изобретать.
 2. Недоступные модели ("доступна": false или null) → «н/д» в матрице.
 3. Тон — аналитический, краткий. Никаких клинических нарративов и рекомендаций пациенту.
-4. Согласованность: разброс P% < 10 пп = высокая, 10–20 пп = средняя, > 20 пп = низкая.
+4. Согласованность: разброс P% < 15 пп = высокая, 15–30 пп = средняя, > 30 пп = низкая.
 5. L5 CSDI = биологический якорь (диффузионная симуляция эмбриологии).
    Расхождение CSDI vs нейросетевых (L3/L6) > 10 пп = значимый конфликт, объяснить.
 6. Ширина CI: < 15 пп = узкий (высокая точность), 15–30 пп = умеренный, > 30 пп = широкий.
-7. Если P_нет_бластоцист > 30% — прогноз на перенос условно применим; отметить.
+7. Если P_нет_бластоцист ≥ 35% — прогноз на перенос условно применим; отметить.
 8. OOD_клинический → снижает доверие к нейросетевым оценкам L3/L6.
    OOD_эмбриологический → снижает вес CSDI в слиянии (L7 BEFE).
 9. Отвечать на русском.

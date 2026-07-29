@@ -1,3 +1,6 @@
+# Copyright 2025-2026 Sergei Sergeev
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# Commercial use requires a separate license: see COMMERCIAL-LICENSE.md
 """
 faithfulness.py — IVF Digital Twin
 Deterministic post-generation check: does the narrator text stay faithful to the
@@ -22,10 +25,19 @@ import re
 from typing import Any, Dict, List, Optional
 
 _BRACKET = re.compile(r"\[([^\[\]]{2,120})\]")
+# [FIX] Модель нередко ставит ссылку в КРУГЛЫХ скобках («(ESHRE ... 2025)»).
+# Раньше проверялись только квадратные, и вся цитатная половина контроля молча
+# не срабатывала, возвращая ok. Круглые разбираем только если внутри есть год
+# или акроним — иначе поймали бы обычные пояснения в скобках.
+_PAREN = re.compile(r"\(([^()]{2,120})\)")
 _YEAR = re.compile(r"\b(19|20)\d{2}\b")
 _ACRONYM = re.compile(r"\b[A-ZЕА-Я]{3,}\b")           # ESHRE, ASRM, BFS, POSEIDON…
-_DOSE_RANGE = re.compile(r"(\d{2,3})\s*[–—-]\s*(\d{2,3})\s*МЕ")
-_DOSE_SINGLE = re.compile(r"(?<![–—\-\d])(\d{2,3})\s*МЕ")
+# [FIX] Единица дозы зависит от локали нарратора: русский пишет «МЕ»,
+# английский рантайм (legacy_en_runtime) — «IU». До этой правки проверка дозы
+# для английской сборки не срабатывала НИ РАЗУ.
+_UNIT = r"(?:МЕ|IU)"
+_DOSE_RANGE = re.compile(rf"(\d{{2,3}})\s*[–—-]\s*(\d{{2,3}})\s*{_UNIT}\b")
+_DOSE_SINGLE = re.compile(rf"(?<![–—\-\d])(\d{{2,3}})\s*{_UNIT}\b")
 
 
 def _statement_ids() -> List[str]:
@@ -37,9 +49,21 @@ def _statement_ids() -> List[str]:
         return []
 
 
+# Короткий тег корпуса склеен: «ESHRE2025», «Arce2014». Без разделения ни _YEAR,
+# ни _ACRONYM его не видят (нет границы слова между буквой и цифрой), и множество
+# разрешённых токенов оказывается пустым — тогда проверка неизвестных ссылок
+# молча отключается. Разделяем буквы и цифры перед разбором.
+_GLUED = re.compile(r"(?<=[A-Za-zА-Яа-я])(?=\d)|(?<=\d)(?=[A-Za-zА-Яа-я])")
+
+
+def _split_glued(s: str) -> str:
+    return _GLUED.sub(" ", s or "")
+
+
 def _allowed_tokens(citations: List[str]) -> set:
     toks = set()
     for c in citations:
+        c = _split_glued(c)
         toks.update(m.group(0) for m in _YEAR.finditer(c))
         toks.update(m.group(0) for m in _ACRONYM.finditer(c))
     return toks
@@ -60,22 +84,32 @@ def check_faithfulness(text: str,
     report["checked"] = True
 
     guidelines = pg.get("гайдлайны", []) or []
-    citations = [g.get("citation", "") for g in guidelines]
+    # `citation` — полная библиография (старый формат), `src` — короткий тег
+    # корпуса (новый формат, «ESHRE2025»). Разрешаем оба, плюс легенду
+    # `источники`, если она рядом: нарратор теперь печатает именно тег.
+    citations = [g.get("citation", "") or g.get("src", "") for g in guidelines]
+    citations += [f"{k} {v}" for k, v in (pg.get("источники") or {}).items()]
     allowed = _allowed_tokens(citations)
     known_ids = set(_statement_ids())
 
     brackets = [m.group(1).strip() for m in _BRACKET.finditer(text)]
+    # Круглые скобки — только если внутри есть год или акроним (см. _PAREN).
+    for m in _PAREN.finditer(text):
+        cand = m.group(1).strip()
+        if _YEAR.search(cand) or _ACRONYM.search(cand):
+            brackets.append(cand)
     for b in brackets:
         # 1a. exact internal id leak (high precision)
         if b in known_ids:
             report["leaked_ids"].append(b)
             continue
         # 1b. citation-looking bracket that shares no source/year with corpus
-        has_year = bool(_YEAR.search(b))
-        has_acro = bool(_ACRONYM.search(b))
+        b_split = _split_glued(b)          # «[ESHRE2025]» → «ESHRE 2025»
+        has_year = bool(_YEAR.search(b_split))
+        has_acro = bool(_ACRONYM.search(b_split))
         if has_year or has_acro:
-            b_tokens = set(m.group(0) for m in _YEAR.finditer(b))
-            b_tokens |= set(m.group(0) for m in _ACRONYM.finditer(b))
+            b_tokens = set(m.group(0) for m in _YEAR.finditer(b_split))
+            b_tokens |= set(m.group(0) for m in _ACRONYM.finditer(b_split))
             if allowed and b_tokens.isdisjoint(allowed):
                 report["unknown_citations"].append(b)
 
@@ -83,14 +117,16 @@ def check_faithfulness(text: str,
     band = (pg.get("номограмма", {}) or {}).get("стартовая_доза_МЕ")
     if isinstance(band, (list, tuple)) and len(band) == 2:
         lo, hi = int(band[0]), int(band[1])
+        # Единицу в сообщении не фиксируем: текст мог быть на русском (МЕ) или
+        # английском (IU), и подставлять чужую было бы неверно.
         for m in _DOSE_RANGE.finditer(text):
             a, b2 = int(m.group(1)), int(m.group(2))
             if not (abs(a - lo) <= 1 and abs(b2 - hi) <= 1):
-                report["dose_mismatches"].append(f"{a}–{b2} МЕ (ожидалось {lo}–{hi})")
+                report["dose_mismatches"].append(f"{a}–{b2} (ожидалось {lo}–{hi})")
         for m in _DOSE_SINGLE.finditer(text):
             v = int(m.group(1))
             if not (lo - 1 <= v <= hi + 1):
-                report["dose_mismatches"].append(f"{v} МЕ (вне {lo}–{hi})")
+                report["dose_mismatches"].append(f"{v} (вне {lo}–{hi})")
 
     report["ok"] = not (report["leaked_ids"]
                         or report["unknown_citations"]
@@ -114,6 +150,11 @@ def summary(report: Dict[str, Any]) -> str:
 
 
 if __name__ == "__main__":
+    import sys
+    try:                       # консоль Windows по умолчанию cp1251
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
     ctx = {"protocol_guidance": {
         "номограмма": {"стартовая_доза_МЕ": [100, 150]},
         "гайдлайны": [

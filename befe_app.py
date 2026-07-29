@@ -1,3 +1,6 @@
+# Copyright 2025-2026 Sergei Sergeev
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# Commercial use requires a separate license: see COMMERCIAL-LICENSE.md
 """
 befe_app.py — Integration layer for BEFE (L7) into IVF Digital Twin v6.3
 ========================================================================
@@ -325,6 +328,11 @@ def build_befe_result(res, *, p_kat_raw=None, ci_kat=(None, None),
 
     engine = BEFE(tau_base_evidence=tau_evidence)
     result = engine.predict(experts, uncertainty, diffusion, cluster, graph, ood)
+    # Preserve the model's own uncertainty interval for technical inspection.
+    # The clinic-derived bounds below are a historical limiting corridor, not
+    # the confidence interval of the BEFE point estimate.
+    result.model_ci_low = result.ci_low
+    result.model_ci_high = result.ci_high
 
     # The L7 point estimate is BEFE, but the interval shown to the clinician
     # should preserve the clinical Beta-Binomial posterior: it is the distribution
@@ -337,15 +345,30 @@ def build_befe_result(res, *, p_kat_raw=None, ci_kat=(None, None),
     if beta_ci_low is not None and beta_ci_high is not None and beta_ci_low < beta_ci_high:
         result.ci_low = beta_ci_low
         result.ci_high = beta_ci_high
-        result.ci_source = "clinical-beta-posterior"
+        result.clinic_corridor_low = beta_ci_low
+        result.clinic_corridor_high = beta_ci_high
+        result.ci_source = "clinic-historical-corridor"
+
+    # Display classification only. These configurable, deliberately softer
+    # thresholds do not alter the BEFE probability or reliability score.
+    try:
+        import streamlit as _st
+        _high = int(_st.session_state.get("_rel_high_threshold", 60))
+        _moderate = int(_st.session_state.get("_rel_moderate_threshold", 35))
+    except Exception:
+        _high, _moderate = 60, 35
+    result.reliability_band = (
+        "High" if result.reliability >= _high else
+        "Moderate" if result.reliability >= _moderate else "Low"
+    )
 
     mapping = {
         "P_L1 (prior)": (p_l1, "res['p_per_transfer'] = MC + FORTUNE/KPI per-transfer"),
         "  ↳ prior CI width": (ci_l1, "spread of sim_p_combined" if ci_l1_from_combined is not None else "rate_ci"),
-        "  ↳ L7 CI source": (
+        "  ↳ clinic corridor source": (
             None,
             (
-                f"clinical Beta posterior Beta({beta_alpha:.0f}, {beta_beta:.0f})"
+                f"clinic batches · Beta({beta_alpha:.0f}, {beta_beta:.0f})"
                 if beta_ci_low is not None and beta_ci_high is not None
                 and beta_alpha is not None and beta_beta is not None
                 else "BEFE logit-pool fallback"
@@ -412,7 +435,7 @@ def render_befe_tab(result, mapping, *, format_report=None):
         except Exception:
             return default
 
-    band_ru    = {"High": "Высокая",  "Moderate": "Умеренная", "Low": "Низкая"}
+    band_ru    = {"High": "Высокая",  "Moderate": "Умеренная", "Low": "Ограниченная"}
     band_color = {"High": "#1E8449",  "Moderate": "#D97706",   "Low": "#C0392B"}
     rb  = result.reliability_band
     rcol = band_color.get(rb, "#1B4F72")
@@ -429,7 +452,7 @@ def render_befe_tab(result, mapping, *, format_report=None):
               <div style="font-size:46px;font-weight:700;color:#1B4F72;line-height:1.05">
                 {pct(result.posterior)}</div>
               <div style="font-size:14px;color:#5A6B7B">
-                95% ДИ: {pct(result.ci_low)} – {pct(result.ci_high)}</div>
+                Исторический коридор клиники: {pct(result.ci_low)} – {pct(result.ci_high)}</div>
             </div>""",
             unsafe_allow_html=True,
         )

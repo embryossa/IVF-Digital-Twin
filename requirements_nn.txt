@@ -1,0 +1,30 @@
+# ================================================================
+# IVF Digital Twin v6.2 — Neural Network dependencies
+# Exact versions confirmed working with the KAT ensemble
+#
+# Install order:
+#   1. python -m pip install torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
+#   2. python -m pip install -r requirements_nn.txt
+#
+# torch is NOT listed here because it requires a special --index-url.
+# Run fix_torch_dll.bat to install it correctly.
+# ================================================================
+
+# Core
+joblib>=1.2.0,<2.0.0
+scikit-learn==1.5.0
+
+#torch==2.4.1
+
+# FT-Transformer / tabular DL
+mambular==0.2.2
+
+# Conformal calibration (Venn-Abers)
+crepes==0.8.0
+
+# Required by mambular
+keras-preprocessing==1.1.2
+
+# Serialization
+cloudpickle==1.5.0
+model-unpickler

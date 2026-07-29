@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Commercial licence enquiry
+    url: https://github.com/embryossa/IVF-Digital-Twin/blob/main/COMMERCIAL-LICENSE.md
+    about: Clinic deployment, product integration, or any commercial use.
+  - name: Security vulnerability
+    url: https://github.com/embryossa/IVF-Digital-Twin/blob/main/SECURITY.md
+    about: Report privately by email — please do not open a public issue.
+  - name: Model weights / research collaboration
+    url: mailto:embryossa@gmail.com
+    about: Request trained weights for a validation study or collaboration.

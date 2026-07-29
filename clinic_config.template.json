@@ -1,0 +1,15 @@
+{
+  "clinic_name": "",
+  "use_clinic_data": false,
+  "description": "Template. Copy to clinic_config.json and fill with your own retrospective outcomes. `batches` is a list of [successes, transfers] pairs, one per reporting period — these anchor the Beta-Binomial prior in L3 and supply the 95% CI reported by BEFE (L7). Set use_clinic_data=true once populated. The real clinic_config.json is deliberately not published: it contains a clinic's own outcome statistics.",
+  "batches": [
+    [15, 40],
+    [17, 45],
+    [14, 38]
+  ],
+  "_notes": {
+    "batches": "Aggregate counts only — never per-patient rows. A period with fewer than ~20 transfers contributes little and widens the posterior, which is the intended behaviour.",
+    "minimum_recommended": "At least 3 periods and 100 transfers total before the clinic prior meaningfully shifts the posterior away from the literature-derived default.",
+    "privacy": "These are counts, not records. Do not add identifiers, dates of birth, or free-text fields to this file."
+  }
+}

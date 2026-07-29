@@ -1,3 +1,6 @@
+# Copyright 2025-2026 Sergei Sergeev
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# Commercial use requires a separate license: see COMMERCIAL-LICENSE.md
 """
 protocol_guidance.py — IVF Digital Twin
 Bridge between app globals (g) and the two new layers:
@@ -77,7 +80,7 @@ def _reconcile_ohss(prob_level: Optional[str], ort_level: str) -> Dict[str, Any]
 
 def build_protocol_guidance(g: Dict[str, Any],
                             use_semantic: bool = True,
-                            max_guidelines: int = 8) -> Optional[Dict[str, Any]]:
+                            max_guidelines: int = 4) -> Optional[Dict[str, Any]]:
     """Compute the deterministic protocol block + matching guideline statements.
 
     Returns a dict for insertion into the narrator context, or None when the
@@ -120,17 +123,33 @@ def build_protocol_guidance(g: Dict[str, Any],
     # [FIX] Do NOT expose the internal `id` to the narrator: the model sometimes
     # cited it verbatim (e.g. "[ASRM_agonist_trigger]"). The narrator only needs
     # the human citation. `id` stays available upstream for retrieval/audit.
-    guidelines_for_llm = [
-        {k: v for k, v in s.items() if k != "id"} for s in guidelines
-    ]
+    #
+    # [PERF] The full bibliography was repeated for every statement — on a CPU
+    # box that is ~200 characters of prompt per statement, re-read on every
+    # patient (measured: prompt eval ≈ 0.17 s/token). We now hand the narrator
+    # the short corpus key as `src` ("ESHRE2025") and return the full
+    # bibliography ONCE in `источники`, for the UI/report to render.
+    guidelines_for_llm = []
+    sources_legend: Dict[str, str] = {}
+    for s in guidelines:
+        tag = s.get("source") or ""
+        if tag and s.get("citation"):
+            sources_legend.setdefault(tag, s["citation"])
+        guidelines_for_llm.append({
+            "text": s.get("text"),
+            "evidence_level": s.get("evidence_level"),
+            "src": tag or s.get("citation", ""),
+        })
 
     # [IMP] Reconcile the two OHSS signals without touching BEFE: probabilistic
     # (res['ohss'], MC pipeline) vs reserve-based (nomogram).
     ohss_reconciliation = _reconcile_ohss(_probabilistic_ohss(g), stim_dict["ohss_risk"])
 
+    # [PERF] `_role` и `инструкция_нарратору` убраны из per-patient блока:
+    # это статический текст, он не меняется от пациента к пациенту и его место
+    # в системном промпте (llm_consultant._SYSTEM_NARRATOR, раздел про протокол).
+    # Здесь остаются только данные.
     return {
-        "_role": ("Детерминированная поддержка по протоколу стимуляции + "
-                  "сопоставленные опубликованные рекомендации. НЕ назначение."),
         "номограмма": {
             "фенотип_ответа":        stim_dict["response_phenotype"],
             "обоснование_фенотипа":  stim_dict["phenotype_reasons"],
@@ -145,16 +164,10 @@ def build_protocol_guidance(g: Dict[str, Any],
         },
         "согласование_СГЯ": ohss_reconciliation,
         "гайдлайны": guidelines_for_llm,
-        "инструкция_нарратору": (
-            "Объясняй прогноз ансамбля СОГЛАСОВАННО с этим блоком: связывай фенотип "
-            "ответа и риск СГЯ из BEFE с номограммой и рекомендациями. Если в "
-            "'согласование_СГЯ' поле 'согласуются' = false — явно проговори обе "
-            "оценки риска и их природу. Дозу подавай как ДИАПАЗОН-ориентир по "
-            "номограмме, а не как назначение. Каждое клиническое утверждение по "
-            "протоколу подкрепляй ссылкой из поля 'citation' ДОСЛОВНО; не выводи "
-            "технические идентификаторы и не придумывай источники. Никаких чисел "
-            "дозы вне этого блока не выдумывай."
-        ),
+        # Полная библиография — ОДИН раз на весь блок, а не в каждом утверждении.
+        # Нарратору в тексте нужен короткий тег из `src`; это поле существует для
+        # UI/PDF-отчёта, где ссылку раскрывают целиком.
+        "источники": sources_legend,
     }
 
 

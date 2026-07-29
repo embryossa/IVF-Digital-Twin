@@ -1,0 +1,35 @@
+name: Methodological question or critique
+description: A coefficient, assumption, or calibration choice looks wrong
+labels: ["methodology"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most valuable kind of issue for a clinical prediction tool.
+        Please include the reference you are arguing from.
+  - type: textarea
+    id: claim
+    attributes:
+      label: What the code currently does
+      description: File, line, and the value or assumption in question.
+    validations:
+      required: true
+  - type: textarea
+    id: argument
+    attributes:
+      label: Why you believe it is wrong
+      description: Reasoning, and the population it does or does not apply to.
+    validations:
+      required: true
+  - type: textarea
+    id: reference
+    attributes:
+      label: Reference
+      description: Citation, DOI or PMID supporting the alternative.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Expected impact
+      description: If known — effect on discrimination, calibration, or a specific patient subgroup.

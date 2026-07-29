@@ -1,3 +1,6 @@
+# Copyright 2025-2026 Sergei Sergeev
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# Commercial use requires a separate license: see COMMERCIAL-LICENSE.md
 """
 gnn_predictor.py — GNN inference module for IVF Digital Twin v6.2
 Место: src/gnn_predictor.py
@@ -164,7 +167,12 @@ def load_gnn_model(base_dir: str = None) -> dict:
                          f'Ожидается в: {candidates[0]}'}
 
     try:
-        ckpt = torch.load(model_path, map_location='cpu')
+        # weights_only=False: чекпойнт содержит не только веса, но и cfg/features,
+        # то есть произвольные Python-объекты. В PyTorch 2.6 умолчание аргумента
+        # сменилось с False на True, и загрузка стала падать ("Weights only load
+        # failed") -> load_gnn_bundle() возвращал available=False, а Digital Twin
+        # молча писал пустые колонки GNN. Файл модели локальный и доверенный.
+        ckpt = torch.load(model_path, map_location='cpu', weights_only=False)
         cfg  = ckpt['cfg']
 
         model = ModelClass(

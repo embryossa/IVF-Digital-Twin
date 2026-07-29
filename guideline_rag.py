@@ -1,3 +1,6 @@
+# Copyright 2025-2026 Sergei Sergeev
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# Commercial use requires a separate license: see COMMERCIAL-LICENSE.md
 """
 guideline_rag.py — IVF Digital Twin
 Offline retrieval over the published-guideline corpus (Layer B).
@@ -68,11 +71,18 @@ def load_pack(path: str = _PACK_PATH, use_cache: bool = True) -> Dict[str, Any]:
 
 
 def _format_statement(st: Dict[str, Any], pack: Dict[str, Any]) -> Dict[str, Any]:
-    """Attach a resolved citation string to a statement for the narrator."""
+    """Attach a resolved citation string to a statement for the narrator.
+
+    `source` (the short corpus key, e.g. "ESHRE2025") is kept alongside the full
+    `citation`: it is the tag the narrator is asked to print, so the prompt no
+    longer has to carry ~200 characters of bibliography per statement. `id` stays
+    as-is — eval_retrieval.py checks retrieval coverage by statement id.
+    """
     src_key = st.get("source", "")
     citation = (pack.get("_meta", {}).get("sources", {}) or {}).get(src_key, src_key)
     return {
         "id": st.get("id"),
+        "source": src_key,
         "text": st.get("text"),
         "evidence_level": st.get("evidence_level"),
         "citation": citation,

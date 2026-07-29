@@ -1,0 +1,55 @@
+name: Bug report
+description: Something behaves incorrectly or crashes
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste patient data into an issue.** Reproduce with synthetic
+        values or the rows in `data/sample/sample_patients.csv`.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Input values (synthetic), the steps, and the full traceback.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Which layer
+      options:
+        - L1 Monte Carlo pipeline
+        - L2 Per-transfer ensemble
+        - L3 KAT neural network
+        - L4 Cluster classifier
+        - L5 CSDI diffusion
+        - L6 GAT patient graph
+        - L7 BEFE fusion
+        - Streamlit UI
+        - Install / dependencies
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      placeholder: "Windows 11 · Python 3.11.5 · torch 2.5.1+cpu · Research Mode"
+    validations:
+      required: true
+  - type: checkboxes
+    id: weights
+    attributes:
+      label: Model weights
+      options:
+        - label: I am running without neural network weights (Research Mode / degraded L1+L2+L4)
+        - label: I have the weights installed

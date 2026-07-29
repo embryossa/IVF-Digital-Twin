@@ -1,3 +1,6 @@
+# Copyright 2025-2026 Sergei Sergeev
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# Commercial use requires a separate license: see COMMERCIAL-LICENSE.md
 """
 stim_protocol.py — IVF Digital Twin
 Deterministic stimulation-protocol module (decision SUPPORT, not prescription).

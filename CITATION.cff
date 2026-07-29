@@ -1,0 +1,39 @@
+cff-version: 1.2.0
+title: >-
+  IVF Digital Twin: An Integrated Multi-Source Ensemble Platform for
+  Stage-Stratified IVF Outcome Prediction
+message: >-
+  If you use this software in research, please cite it using the metadata
+  in this file.
+type: software
+authors:
+  - family-names: Sergeev
+    given-names: Sergei
+    email: embryossa@gmail.com
+  - family-names: Nadirashvili
+    given-names: Lasha
+  - family-names: Kazarinov
+    given-names: Veniamin
+  - family-names: Diakova
+    given-names: Iuliia
+  - family-names: Nadirashvili
+    given-names: Tamara
+repository-code: 'https://github.com/embryossa/IVF-Digital-Twin'
+abstract: >-
+  A source-available ensemble platform for stage-stratified prediction of
+  IVF outcomes, combining Bayesian modelling, gradient boosting, tabular
+  deep learning (FT-Transformer / Mambular), graph neural networks and
+  diffusion-based synthesis across the follicle to live-birth funnel.
+  Includes clinic-specific calibration, conformal prediction intervals,
+  and retrieval-grounded narrative reporting.
+keywords:
+  - IVF
+  - assisted reproductive technology
+  - clinical prediction model
+  - digital twin
+  - machine learning
+  - embryology
+license: LicenseRef-PolyForm-Noncommercial-1.0.0
+license-url: 'https://polyformproject.org/licenses/noncommercial/1.0.0/'
+version: 6.2.0
+date-released: '2026-07-30'

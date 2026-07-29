@@ -1,10 +1,10 @@
 {
   "_meta": {
-    "version": "1.1.0",
+    "version": "1.2.0",
     "purpose": "Offline, rule-keyed corpus of published guideline / calculator statements for guideline_rag.py. Each statement is a SHORT PARAPHRASE in the author's own words with an attached citation; consult the primary source for exact wording and grade. Keys map to stim_protocol.StimOutput.situation_keys.",
     "sources": {
       "ESHRE2025": "ESHRE Guideline Group on Ovarian Stimulation. Ovarian stimulation for IVF/ICSI: an update. Hum Reprod Open, 2025 (update of 2020).",
-      "ASRM2023": "Practice Committee ASRM. Prevention of moderate and severe OHSS: a guideline. Fertil Steril 2024;121:230-245.",
+      "ASRM2024": "Practice Committee ASRM. Prevention of moderate and severe OHSS: a guideline. Fertil Steril 2024;121:230-245.",
       "BFS2024": "British Fertility Society. Prevention of OHSS: policy and practice guideline. Hum Fertil 2024.",
       "Fanton2022": "Fanton M, et al. An interpretable machine learning model for individualized gonadotrophin starting dose selection during ovarian stimulation. Reprod Biomed Online 2022;45:1152-1159.",
       "FernandezSanchez2019": "Fernandez-Sanchez M, et al. Individualization of the starting dose of follitropin delta reduces the overall OHSS risk and/or the need for additional preventive interventions. Reprod Biomed Online 2019;38:528-537.",
@@ -12,213 +12,320 @@
       "OPTIMIST": "van Tilborg TC / Oudshoorn SC et al. Individualized versus standard FSH dosing in IVF/ICSI (OPTIMIST RCT). Hum Reprod 2017;32:2485-2495 / 2506-2514.",
       "Sunkara2011": "Sunkara SK, et al. Association between the number of eggs and live birth in IVF treatment: analysis of 400 135 treatment cycles. Hum Reprod 2011;26:1768-1774.",
       "POvaStim2023": "Xu H, Feng G, Han Y, La Marca A, Li R, Qiao J. POvaStim: an online tool for directing individualized FSH doses in ovarian stimulation. Innovation (Camb) 2023;4:100401.",
-      "Arce": "Arce JC, et al. Ovarian response to recombinant human FSH: a randomized, anti-Mullerian-hormone-stratified, dose-response trial in IVF/ICSI. Fertil Steril 2014.",
+      "Arce2014": "Arce JC, et al. Ovarian response to recombinant human FSH: a randomized, anti-Mullerian-hormone-stratified, dose-response trial in IVF/ICSI. Fertil Steril 2014.",
       "POSEIDON2016": "Alviggi C, Humaidan P, et al. A new more detailed stratification of low responders: the POSEIDON criteria. Fertil Steril 2016;105:1452-1453."
-    }
+    },
+    "changelog": [
+      "1.2.0 — source keys are now shown to the narrator as citation tags, so they must match the publication year: ASRM2023→ASRM2024 (Fertil Steril 2024), Arce→Arce2014 (Fertil Steril 2014). Statement ids unchanged."
+    ]
   },
-
   "statements": [
     {
       "id": "ESHRE_conventional_dose",
       "source": "ESHRE2025",
       "evidence_level": "guideline",
-      "keys": ["normal_responder", "high_responder", "poor_responder"],
+      "keys": [
+        "normal_responder",
+        "high_responder",
+        "poor_responder"
+      ],
       "text": "Конвенциональной считается суточная доза FSH 150-225 МЕ; ниже этого — мягкая стимуляция (сниженная доза или отсроченный старт)."
     },
     {
       "id": "ESHRE_antagonist_first_line",
       "source": "ESHRE2025",
       "evidence_level": "guideline",
-      "keys": ["normal_responder", "high_responder"],
+      "keys": [
+        "normal_responder",
+        "high_responder"
+      ],
       "text": "Протокол с GnRH-антагонистом — приемлемый выбор первой линии в общей популяции и предпочтителен там, где важна гибкость и профилактика СГЯ."
     },
     {
       "id": "ESHRE_ort_best_predictors",
       "source": "ESHRE2025",
       "evidence_level": "guideline",
-      "keys": ["normal_responder", "high_responder", "poor_responder"],
+      "keys": [
+        "normal_responder",
+        "high_responder",
+        "poor_responder"
+      ],
       "text": "AMH и AFC — наиболее надёжные предикторы овариального ответа и основа для выбора стартовой дозы; возраст и ИМТ имеют меньшую предсказательную силу."
     },
     {
       "id": "ESHRE_ort_dose_reduces_ohss",
       "source": "ESHRE2025",
       "evidence_level": "1+",
-      "keys": ["ohss_risk_elevated", "high_responder", "amh_high"],
+      "keys": [
+        "ohss_risk_elevated",
+        "high_responder",
+        "amh_high"
+      ],
       "text": "Подбор дозы FSH по тестам овариального резерва (AMH/AFC) снижает частоту умеренного и тяжёлого СГЯ; такую индивидуализацию следует рассматривать у пациенток с риском гиперответа."
     },
     {
       "id": "ESHRE_freeze_all_eliminates_late_ohss",
       "source": "ESHRE2025",
       "evidence_level": "strong",
-      "keys": ["freeze_all_candidate", "ohss_risk_elevated"],
+      "keys": [
+        "freeze_all_candidate",
+        "ohss_risk_elevated"
+      ],
       "text": "Стратегия freeze-all рекомендована для полного устранения риска позднего (late-onset) СГЯ."
     },
     {
       "id": "ESHRE_risk_assessment_before_os",
       "source": "ESHRE2025",
       "evidence_level": "GPP",
-      "keys": ["high_responder", "ohss_risk_elevated", "amh_high"],
+      "keys": [
+        "high_responder",
+        "ohss_risk_elevated",
+        "amh_high"
+      ],
       "text": "До начала стимуляции целесообразна оценка риска гиперответа."
     },
     {
       "id": "ESHRE_trigger_lead_follicles",
       "source": "ESHRE2025",
       "evidence_level": "guideline",
-      "keys": ["normal_responder", "high_responder", "poor_responder"],
+      "keys": [
+        "normal_responder",
+        "high_responder",
+        "poor_responder"
+      ],
       "text": "Финальное созревание обычно запускают при достижении ведущими фолликулами ~17 мм; время триггера индивидуально и не привязано к фиксированному дню."
     },
     {
       "id": "ESHRE_poor_no_superior_protocol",
       "source": "ESHRE2025",
       "evidence_level": "guideline",
-      "keys": ["poor_responder", "amh_low"],
+      "keys": [
+        "poor_responder",
+        "amh_low"
+      ],
       "text": "У слабых ответчиков нет однозначно превосходящего протокола; антагонист приемлем, мягкая стимуляция — разумная опция с сопоставимыми исходами."
     },
     {
       "id": "ESHRE_poor_adjuvants_weak",
       "source": "ESHRE2025",
       "evidence_level": "weak",
-      "keys": ["poor_responder", "amh_low"],
+      "keys": [
+        "poor_responder",
+        "amh_low"
+      ],
       "text": "Адъюванты у слабых ответчиков (андрогены/ДГЭА, гормон роста) имеют слабую и противоречивую доказательную базу; рутинно не рекомендуются."
     },
     {
       "id": "ESHRE_rlh_no_clear_lbr",
       "source": "ESHRE2025",
       "evidence_level": "low",
-      "keys": ["poor_responder", "amh_low"],
+      "keys": [
+        "poor_responder",
+        "amh_low"
+      ],
       "text": "Добавление рекомбинантного ЛГ к FSH не показало чёткого преимущества по живорождению; данные ограничены и неоднородны."
     },
     {
       "id": "POSEIDON_low_prognosis",
       "source": "POSEIDON2016",
       "evidence_level": "stratification",
-      "keys": ["poor_responder", "amh_low"],
+      "keys": [
+        "poor_responder",
+        "amh_low"
+      ],
       "text": "Критерии POSEIDON детализируют группу низкого прогноза по возрасту, овариальному резерву и предыдущему ответу, помогая адресно планировать стимуляцию и ожидания."
     },
     {
       "id": "ASRM_antagonist_over_agonist",
-      "source": "ASRM2023",
+      "source": "ASRM2024",
       "evidence_level": "A / strong",
-      "keys": ["antagonist_preferred", "ohss_risk_elevated", "agonist_trigger_candidate"],
+      "keys": [
+        "antagonist_preferred",
+        "ohss_risk_elevated",
+        "agonist_trigger_candidate"
+      ],
       "text": "При опасении СГЯ предпочтительны протоколы с GnRH-антагонистом, а не с агонистом."
     },
     {
       "id": "ASRM_lower_start_dose",
-      "source": "ASRM2023",
+      "source": "ASRM2024",
       "evidence_level": "guideline",
-      "keys": ["ohss_risk_elevated", "high_responder", "amh_high"],
+      "keys": [
+        "ohss_risk_elevated",
+        "high_responder",
+        "amh_high"
+      ],
       "text": "Для снижения риска СГЯ рекомендуется рассмотреть уменьшение стартовой дозы гонадотропина и/или добавление пероральных индукторов (кломифен/летрозол)."
     },
     {
       "id": "ASRM_counsel_high_amh_pcos",
-      "source": "ASRM2023",
+      "source": "ASRM2024",
       "evidence_level": "guideline",
-      "keys": ["high_responder", "amh_high", "ohss_risk_elevated"],
+      "keys": [
+        "high_responder",
+        "amh_high",
+        "ohss_risk_elevated"
+      ],
       "text": "Пациенток с повышенным AMH, СПКЯ и ожидаемым высоким выходом ооцитов следует информировать о повышенном риске СГЯ; профилактика фокусируется на этой группе."
     },
     {
       "id": "ASRM_agonist_trigger",
-      "source": "ASRM2023",
+      "source": "ASRM2024",
       "evidence_level": "guideline",
-      "keys": ["agonist_trigger_candidate", "antagonist_preferred", "ohss_risk_elevated"],
+      "keys": [
+        "agonist_trigger_candidate",
+        "antagonist_preferred",
+        "ohss_risk_elevated"
+      ],
       "text": "В антагонист-протоколе у пациенток с риском СГЯ финальное созревание агонистом GnRH (вместо ХГЧ) существенно снижает риск синдрома."
     },
     {
       "id": "ASRM_dopamine_agonist",
-      "source": "ASRM2023",
+      "source": "ASRM2024",
       "evidence_level": "guideline",
-      "keys": ["ohss_risk_elevated", "high_responder"],
+      "keys": [
+        "ohss_risk_elevated",
+        "high_responder"
+      ],
       "text": "Агонисты дофамина (например каберголин) после триггера снижают частоту умеренного СГЯ у пациенток высокого риска."
     },
     {
       "id": "ASRM_metformin_pcos",
-      "source": "ASRM2023",
+      "source": "ASRM2024",
       "evidence_level": "guideline",
-      "keys": ["high_responder", "amh_high", "ohss_risk_elevated"],
+      "keys": [
+        "high_responder",
+        "amh_high",
+        "ohss_risk_elevated"
+      ],
       "text": "У пациенток с СПКЯ метформин во время стимуляции в антагонист-протоколе снижает риск СГЯ."
     },
     {
       "id": "ASRM_coasting_weak",
-      "source": "ASRM2023",
+      "source": "ASRM2024",
       "evidence_level": "limited",
-      "keys": ["ohss_risk_elevated", "high_responder"],
+      "keys": [
+        "ohss_risk_elevated",
+        "high_responder"
+      ],
       "text": "Коастинг (пауза в гонадотропинах) как мера профилактики СГЯ имеет ограниченную доказательность и может снижать число ооцитов; не относится к предпочтительным методам."
     },
     {
       "id": "ASRM_iv_albumin_secondary",
-      "source": "ASRM2023",
+      "source": "ASRM2024",
       "evidence_level": "guideline",
-      "keys": ["ohss_risk_elevated", "agonist_trigger_candidate"],
+      "keys": [
+        "ohss_risk_elevated",
+        "agonist_trigger_candidate"
+      ],
       "text": "Внутривенные растворы/альбумин в день пункции рассматриваются как вторичная профилактика у отдельных пациенток высокого риска, не как замена первичным мерам."
     },
     {
       "id": "ASRM_avoid_fresh_transfer",
-      "source": "ASRM2023",
+      "source": "ASRM2024",
       "evidence_level": "guideline",
-      "keys": ["freeze_all_candidate", "high_responder", "ohss_risk_elevated"],
+      "keys": [
+        "freeze_all_candidate",
+        "high_responder",
+        "ohss_risk_elevated"
+      ],
       "text": "При высоком риске СГЯ отказ от свежего переноса с криоконсервацией всех эмбрионов снижает риск раннего и позднего синдрома."
     },
     {
       "id": "BFS_low_fsh_lowers_ohss",
       "source": "BFS2024",
       "evidence_level": "1- / 1+",
-      "keys": ["ohss_risk_elevated", "high_responder"],
+      "keys": [
+        "ohss_risk_elevated",
+        "high_responder"
+      ],
       "text": "Доза FSH ниже 150 МЕ/сут может ассоциироваться со сниженным риском СГЯ; доза по овариальному резерву снижает частоту умеренного/тяжёлого СГЯ."
     },
     {
       "id": "BFS_mild_stim_definition",
       "source": "BFS2024",
       "evidence_level": "guideline",
-      "keys": ["high_responder", "ohss_risk_elevated", "normal_responder"],
+      "keys": [
+        "high_responder",
+        "ohss_risk_elevated",
+        "normal_responder"
+      ],
       "text": "Мягкая стимуляция (сниженная доза FSH или отсроченный старт) уменьшает число ооцитов у нормо- и слабых ответчиков, не влияя на живорождение."
     },
     {
       "id": "individualisation_reduces_ohss",
       "source": "FernandezSanchez2019",
       "evidence_level": "RCT-derived",
-      "keys": ["high_responder", "ohss_risk_elevated", "amh_high"],
+      "keys": [
+        "high_responder",
+        "ohss_risk_elevated",
+        "amh_high"
+      ],
       "text": "Индивидуализация стартовой дозы (фоллитропин дельта по AMH и массе тела) снижает общий риск СГЯ и/или потребность в дополнительных профилактических вмешательствах — это снижение, а не полное устранение риска."
     },
     {
       "id": "poor_responder_dose_ceiling",
       "source": "InverseFSH2021",
       "evidence_level": "large-cohort",
-      "keys": ["poor_responder", "poor_response_dose_ceiling", "amh_low"],
+      "keys": [
+        "poor_responder",
+        "poor_response_dose_ceiling",
+        "amh_low"
+      ],
       "text": "В крупных когортах более высокая доза FSH ассоциирована с меньшим, а не большим числом полученных ооцитов и обратно связана с живорождением; у слабых ответчиков дальнейшая эскалация дозы не повышает шанс живорождения."
     },
     {
       "id": "optimist_no_lbr_gain",
       "source": "OPTIMIST",
       "evidence_level": "RCT",
-      "keys": ["poor_responder", "poor_response_dose_ceiling", "amh_low"],
+      "keys": [
+        "poor_responder",
+        "poor_response_dose_ceiling",
+        "amh_low"
+      ],
       "text": "В RCT индивидуализация дозы (включая повышенные дозы у предсказанных слабых ответчиков) не улучшала живорождение по сравнению со стандартной дозой; у предсказанных гиперответчиков сниженная доза снижала СГЯ без потери эффективности."
     },
     {
       "id": "fanton_knn_individualisation",
       "source": "Fanton2022",
       "evidence_level": "retrospective ML",
-      "keys": ["normal_responder", "high_responder", "poor_responder"],
+      "keys": [
+        "normal_responder",
+        "high_responder",
+        "poor_responder"
+      ],
       "text": "Интерпретируемая KNN-модель по возрасту, ИМТ, AMH и AFC строит индивидуальную кривую доза-ответ по похожим пациентам; в дозочувствительной подгруппе оптимальная доза давала больше зрелых ооцитов, зигот и пригодных бластоцист при несколько меньшей стартовой дозе FSH."
     },
     {
       "id": "povastim_calculator",
       "source": "POvaStim2023",
       "evidence_level": "tool",
-      "keys": ["normal_responder", "high_responder", "poor_responder"],
+      "keys": [
+        "normal_responder",
+        "high_responder",
+        "poor_responder"
+      ],
       "text": "POvaStim — онлайн-калькулятор индивидуальной дозы FSH по овариальному резерву (AMH/AFC), оформляющий номограммный подбор стартовой дозы."
     },
     {
       "id": "arce_amh_stratified_dose_response",
-      "source": "Arce",
+      "source": "Arce2014",
       "evidence_level": "RCT",
-      "keys": ["high_responder", "amh_high", "normal_responder"],
+      "keys": [
+        "high_responder",
+        "amh_high",
+        "normal_responder"
+      ],
       "text": "В AMH-стратифицированном дозо-ответном RCT ответ яичников на рекомбинантный FSH зависел от исходного AMH, что лежит в основе AMH-ориентированного подбора дозы."
     },
     {
       "id": "sunkara_oocyte_plateau",
       "source": "Sunkara2011",
       "evidence_level": "large-cohort",
-      "keys": ["high_responder", "normal_responder"],
+      "keys": [
+        "high_responder",
+        "normal_responder"
+      ],
       "text": "Зависимость живорождения от числа ооцитов выходит на плато примерно в середине второго десятка; дальнейшее наращивание выхода ооцитов не повышает живорождение, но увеличивает риск СГЯ — обоснование ограниченного целевого выхода."
     }
   ]

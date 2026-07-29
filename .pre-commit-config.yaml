@@ -1,0 +1,38 @@
+# Pre-commit gates for the public repository.
+# Install once:  pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+        name: gitleaks (block committed secrets)
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+      - id: check-merge-conflict
+      - id: check-json
+      - id: check-yaml
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+
+  - repo: local
+    hooks:
+      - id: no-patient-data
+        name: block spreadsheets and model weights
+        entry: >-
+          Refused: spreadsheets and model weights are never committed.
+          Patient rows and proprietary weights have both arrived this way before.
+        language: fail
+        files: '\.(xlsx|xls|pt|pth|joblib|pkl|npz|lic|key|pem)$'

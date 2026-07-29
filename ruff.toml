@@ -1,0 +1,45 @@
+# Ruff configuration.
+#
+# Scope is deliberate: this enables the rules that catch *defects* — syntax
+# errors, undefined names, duplicate definitions, comparisons that never do
+# what they look like — and leaves stylistic rules off. Turning on the full
+# default set would produce several thousand findings across research code
+# that is correct, and a CI signal nobody reads is worse than none.
+#
+# Two real dead-code fragments (orphaned function bodies left after a `def`
+# line was deleted) were found by exactly this ruleset, which is the argument
+# for keeping it enforced.
+
+target-version = "py310"
+line-length = 100
+
+exclude = [
+    ".venv",
+    "__pycache__",
+    # Superseded English runtime, kept for reference, not maintained and not
+    # published. Linting it produces noise about code nobody will change.
+    "legacy_en_runtime",
+    "legacy_full_en_source.py",
+    "legacy_full_report.py",
+]
+
+[lint]
+select = [
+    "E9",    # syntax / IO errors
+    "F63",   # comparisons that are always true/false
+    "F7",    # syntax-adjacent logic errors (break outside loop, etc.)
+    "F82",   # undefined names
+    "F811",  # redefinition of unused name
+    "F502",  # percent-format mistakes
+    "F632",  # `is` used with a literal
+]
+
+[lint.per-file-ignores]
+# These modules load `src/ivf_digital_twin.py` with exec(compile(...)) so the
+# pipeline's public names are injected into module globals at runtime. Ruff
+# performs static analysis and cannot see them, so every such name reads as
+# undefined. The names are verified live by tests/test_pipeline.py, which
+# imports the same module conventionally.
+"app.py" = ["F821"]
+"scripts/batch_predict.py" = ["F821"]
+"src/ivf_core.py" = ["F821"]

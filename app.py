@@ -1,3 +1,6 @@
+# Copyright 2025-2026 Sergei Sergeev
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# Commercial use requires a separate license: see COMMERCIAL-LICENSE.md
 """
 IVF Digital Twin v7.0 — Streamlit Clinical Application
 Запуск: streamlit run app.py
@@ -12,11 +15,22 @@ from datetime import datetime, date
 from pathlib import Path as _Path
 warnings.filterwarnings("ignore")
 
+# Combined application: redesigned concise clinical summary plus the complete
+# original report. All runtime assets live in this project directory.
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+_SOURCE_DIR = _APP_DIR
+for _path in (_APP_DIR, _SOURCE_DIR):
+    while _path in sys.path:
+        sys.path.remove(_path)
+sys.path.insert(0, _APP_DIR)
+sys.path.insert(1, _SOURCE_DIR)
+
 import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 from scipy.stats import beta as beta_dist, norm, ks_2samp
+from i18n import tr as _translate, reliability_label as _reliability_label
 
 # ── BEFE (L7) — Bayesian Evidence Fusion Engine ──────────────
 try:
@@ -142,12 +156,6 @@ def _apply_gnn_style(fig):
         pass
     return fig
 
-
-    """#RRGGBB → 'rgba(r,g,b,a)' — Plotly не принимает 8-значный HEX."""
-    h = h.lstrip("#")
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    return f"rgba({r},{g},{b},{a:.2f})"
-
 # ── Цветовые палитры ──────────────────────────────────────────
 C = {
     "blue":   "#6F93B7",
@@ -261,11 +269,19 @@ def _plot_chart(fig, **kwargs):
 
 # ── Настройка страницы ────────────────────────────────────────
 st.set_page_config(
-    page_title="IVF Digital Twin",
+    page_title="IVF Digital Twin · Clinical UI",
     page_icon="D",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+_LANG = st.sidebar.radio(
+    "Язык / Language",
+    ["Русский", "English"],
+    horizontal=True,
+    key="_clinical_language",
+)
+_t = lambda key: _translate(_LANG, key)
 
 # -- Podklyuchaem kriptograficheskiy dvizhok
 # -- PDF generator
@@ -275,7 +291,7 @@ try:
 except ImportError as _pe:
     _PDF_OK = False
     _PDF_ERR = str(_pe)
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_BASE_DIR = _SOURCE_DIR
 sys.path.insert(0, os.path.join(_BASE_DIR, "src"))
 try:
     from crypt_engine import verify_license, get_model_key
@@ -391,7 +407,20 @@ def _try_activate(key_str: str):
 
 
 def check_license():
-    """Проверяет офлайн-лицензию перед показом интерфейса."""
+    """Проверяет офлайн-лицензию перед показом интерфейса.
+
+    Исследовательская сборка поставляется без `src/crypt_engine.py`.
+    В этом случае гейт пропускается и приложение работает в Research Mode:
+    все слои доступны, но сборка не лицензирована для клинического
+    применения. Коммерческая сборка содержит crypt_engine, и гейт
+    работает как обычно.
+    """
+    # 0. Research Mode — модуль лицензирования отсутствует
+    if not _CRYPT_ENGINE_OK:
+        st.session_state[_SESSION_KEY] = True
+        st.session_state["ivf_research_mode"] = True
+        return
+
     # 1. Session state (уже проверена в этой сессии)
     if st.session_state.get(_SESSION_KEY):
         return
@@ -417,6 +446,15 @@ def check_license():
 
 check_license()
 
+if st.session_state.get("ivf_research_mode"):
+    st.warning(
+        "**Research Mode** — исследовательская сборка без модуля лицензирования. "
+        "Все слои доступны, но эта сборка **не лицензирована для клинического "
+        "применения**: результаты предназначены для изучения методов и "
+        "воспроизведения опубликованных экспериментов. См. DISCLAIMER.md.",
+        icon="🔬",
+    )
+
 # ── Баннер лицензии в sidebar ─────────────────────────────────
 _clinic = st.session_state.get("ivf_clinic_name", "")
 _expires = st.session_state.get("ivf_expires")
@@ -424,8 +462,11 @@ if _clinic and _expires:
     _days_left = (_expires - date.today()).days
     if _days_left <= 14:
         st.sidebar.warning(
-            f"Лицензия истекает через **{_days_left} дн.** ({_expires})\n"
-            "Обратитесь к поставщику для продления."
+            (f"Licence expires in **{_days_left} days** ({_expires}).\n"
+             "Contact the supplier for renewal."
+             if _LANG == "English" else
+             f"Лицензия истекает через **{_days_left} дн.** ({_expires})\n"
+             "Обратитесь к поставщику для продления.")
         )
     else:
         st.sidebar.success(
@@ -435,7 +476,7 @@ if _clinic and _expires:
 
 
 # ── подключаем основной pipeline (.py или скомпилированный .pyd) ──
-_src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
+_src_dir = os.path.join(_SOURCE_DIR, "src")
 sys.path.insert(0, _src_dir)
 
 _src_py  = os.path.join(_src_dir, "ivf_digital_twin.py")
@@ -502,7 +543,7 @@ _csdi_pyd = any(
 
 _csdi_candidates = [
     os.path.join(_src_dir, "embryo_csdi_v3.py"),
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "embryo_csdi_v3.py"),
+    os.path.join(_SOURCE_DIR, "embryo_csdi_v3.py"),
 ]
 
 if _csdi_pyd:
@@ -534,8 +575,8 @@ else:
 
 # Директория с обученной моделью
 _CSDI_MODEL_DIRS = [
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "embryo_v3_model"),
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "embryo_v3_model"),
+    os.path.join(_SOURCE_DIR, "models", "embryo_v3_model"),
+    os.path.join(_SOURCE_DIR, "embryo_v3_model"),
     "embryo_v3_model",
 ]
 
@@ -577,7 +618,7 @@ else:
 #  Автоматически сохраняет каждый расчёт в dt_analytics_data/dt_predictions.csv
 # ══════════════════════════════════════════════════════════════
 
-_ANALYTICS_DIR = _Path(os.path.dirname(os.path.abspath(__file__))) / "dt_analytics_data"
+_ANALYTICS_DIR = _Path(_APP_DIR) / "dt_analytics_data"
 _ANALYTICS_CSV = _ANALYTICS_DIR / "dt_predictions.csv"
 
 _ANALYTICS_COLUMNS = [
@@ -787,44 +828,55 @@ def _get_gnn_bundle():
     return _load_gnn_model(base_dir=_BASE_DIR)
 
 _gnn_bundle = _get_gnn_bundle()
-st.sidebar.image(os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo22.png"), width=80)
-st.sidebar.title("IVF Digital Twin v7.0")
-st.sidebar.caption("from in vitro to in silico")
+st.sidebar.image(os.path.join(_SOURCE_DIR, "logo22.png"), width=80)
+st.sidebar.title("IVF Digital Twin")
+st.sidebar.caption("Clinical UI Redesign · from in vitro to in silico")
 st.sidebar.markdown("---")
 
 # ── Краткий отчёт для пациента (модуль patient_brief.py, опционально) ──────
-_BRIEF_AVAILABLE = os.path.exists(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "patient_brief.py")
-)
+_brief_source_path = os.path.join(_APP_DIR, "patient_brief.py")
+try:
+    import importlib.util as _brief_importlib_util
+    _brief_module_spec = _brief_importlib_util.find_spec("patient_brief")
+except Exception:
+    _brief_module_spec = None
+_BRIEF_AVAILABLE = os.path.exists(_brief_source_path) or _brief_module_spec is not None
 if _BRIEF_AVAILABLE:
     # Краткий режим — по умолчанию. Расширенный включается кнопкой в отчёте.
     if "_view_mode" not in st.session_state:
-        st.session_state["_view_mode"] = "Краткий (для пациента)"
+        st.session_state["_view_mode"] = "Clinical summary"
 
-st.sidebar.header("Параметры пациентки")
-age  = st.sidebar.number_input("Возраст (лет)", 18, 50, 35, 1)
-amh  = st.sidebar.number_input("АМГ (нг/мл)", 0.01, 15.0, 2.50, 0.10,
+st.sidebar.header(_t("patient_parameters"))
+age  = st.sidebar.number_input(_t("age"), 18, 50, 35, 1)
+amh  = st.sidebar.number_input(_t("amh"), 0.01, 15.0, 2.50, 0.10,
                                  format="%.2f")
-afc  = st.sidebar.number_input("АФС (антральные фолликулы)", 1, 60, 15, 1)
+afc  = st.sidebar.number_input(_t("afc"), 1, 60, 15, 1)
 bmi_col1, bmi_col2 = st.sidebar.columns(2)
 with bmi_col1:
-    _height_cm = st.number_input("Рост (см)", 140, 200, 165, 1)
+    _height_cm = st.number_input(_t("height"), 140, 200, 165, 1)
 with bmi_col2:
-    _weight_kg = st.number_input("Вес (кг)", 40, 150, 65, 1)
+    _weight_kg = st.number_input(_t("weight"), 40, 150, 65, 1)
 bmi = round(_weight_kg / (_height_cm / 100) ** 2, 1)
-st.sidebar.caption(f"ИМТ: **{bmi} кг/м²** · {'↑ избыток' if bmi >= 30 else ('↓ дефицит' if bmi < 18.5 else '✓ норма')}")
+_bmi_band = (
+    ("↑ high" if _LANG == "English" else "↑ избыток") if bmi >= 30 else
+    (("↓ low" if _LANG == "English" else "↓ дефицит") if bmi < 18.5 else
+     ("✓ normal" if _LANG == "English" else "✓ норма"))
+)
+st.sidebar.caption(f"BMI: **{bmi} kg/m²** · {_bmi_band}" if _LANG == "English" else
+                   f"ИМТ: **{bmi} кг/м²** · {_bmi_band}")
 
 st.sidebar.markdown("---")
-st.sidebar.header("Параметры цикла")
-attempt = st.sidebar.number_input("Номер попытки ЭКО", 1, 10, 1, 1)
-follicles = st.sidebar.number_input("Фолликулов на ТВП (0 = AFC)",
+st.sidebar.header(_t("cycle_parameters"))
+attempt = st.sidebar.number_input(_t("attempt"), 1, 10, 1, 1)
+follicles = st.sidebar.number_input(_t("follicles"),
                                      0, 60, 0, 1)
 follicles = None if follicles == 0 else int(follicles)
 
 sperm_label = st.sidebar.selectbox(
-    "Источник спермы (для банкинга)",
-    ["Эякулят", "Тестикулярная (НОА)",
-     "Тестикулярная (ОА)", "Эпидидимальная"],
+    _t("sperm"),
+    (["Ejaculate", "Testicular (NOA)", "Testicular (OA)", "Epididymal"]
+     if _LANG == "English" else
+     ["Эякулят", "Тестикулярная (НОА)", "Тестикулярная (ОА)", "Эпидидимальная"]),
     index=0,
     help="Модуль банкинга учитывает источник спермы при оценке выхода эуплоидных",
 )
@@ -833,21 +885,26 @@ _sperm_map = {
     "Тестикулярная (НОА)":   "testicular_NOA",
     "Тестикулярная (ОА)":    "testicular_OA",
     "Эпидидимальная":        "epididymal",
+    "Ejaculate":             "ejaculate",
+    "Testicular (NOA)":      "testicular_NOA",
+    "Testicular (OA)":       "testicular_OA",
+    "Epididymal":            "epididymal",
 }
 sperm_source = _sperm_map[sperm_label]
 
 st.sidebar.markdown("---")
-st.sidebar.header("Байесовское обновление (mid-cycle)")
-st.sidebar.caption("Введите наблюдённые значения. Оставьте 0 = не наблюдалось.")
+st.sidebar.header(_t("mid_cycle"))
+st.sidebar.caption("Enter observed values; leave 0 when unavailable." if _LANG == "English"
+                   else "Введите наблюдённые значения. Оставьте 0 = не наблюдалось.")
 
 def optional_int(val): return int(val) if val > 0 else None
 
-okk_obs    = st.sidebar.number_input("Получено ооцитов (ОКК)", 0, 60, 0)
-mii_obs    = st.sidebar.number_input("MII ооцитов", 0, 60, 0)
-pn2_obs    = st.sidebar.number_input("2PN зигот", 0, 50, 0)
-blasts_obs = st.sidebar.number_input("Бластоцист всего", 0, 40, 0)
-good_obs   = st.sidebar.number_input("Бластоцист хор. кач.", 0, 40, 0)
-euploid_obs= st.sidebar.number_input("Эуплоидных (ПГТ-А)", 0, 30, 0)
+okk_obs    = st.sidebar.number_input("Oocytes retrieved (OCC)" if _LANG == "English" else "Получено ооцитов (ОКК)", 0, 60, 0)
+mii_obs    = st.sidebar.number_input("MII oocytes" if _LANG == "English" else "MII ооцитов", 0, 60, 0)
+pn2_obs    = st.sidebar.number_input("2PN zygotes" if _LANG == "English" else "2PN зигот", 0, 50, 0)
+blasts_obs = st.sidebar.number_input("Total blastocysts" if _LANG == "English" else "Бластоцист всего", 0, 40, 0)
+good_obs   = st.sidebar.number_input("Good-quality blastocysts" if _LANG == "English" else "Бластоцист хор. кач.", 0, 40, 0)
+euploid_obs= st.sidebar.number_input("Euploid (PGT-A)" if _LANG == "English" else "Эуплоидных (ПГТ-А)", 0, 30, 0)
 
 known = KnownValues(
     okk     = optional_int(okk_obs),
@@ -859,7 +916,7 @@ known = KnownValues(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.header("Данные клиники (prior)")
+st.sidebar.header("Clinic data (prior)" if _LANG == "English" else "Данные клиники (prior)")
 
 # Конфиг клиники: success/transfer батчи берутся из clinic_config.json, который
 # редактируется под каждую клинику. Файл — единственный источник данных, чтобы
@@ -880,8 +937,11 @@ if _clinic_cfg is not None:
         st.session_state["ivf_clinic_name"] = _cfg_clinic_name
     _cfg_default_on = bool(_clinic_cfg.get("use_clinic_data", True))
     use_clinic = st.sidebar.checkbox(
-        "Использовать данные клиники", value=_cfg_default_on,
-        help="Источник — clinic_config.json. Отредактируйте файл, чтобы изменить.")
+        "Use clinic data" if _LANG == "English" else "Использовать данные клиники",
+        value=_cfg_default_on,
+        help=("Source: clinic_config.json. Edit the file to change the batches."
+              if _LANG == "English" else
+              "Источник — clinic_config.json. Отредактируйте файл, чтобы изменить."))
     if use_clinic:
         try:
             # Пересчитываем КАЖДЫЙ раз из конфига — частота не «залипает».
@@ -892,17 +952,22 @@ if _clinic_cfg is not None:
                 obs_rate = sum(clinic_s) / sum(clinic_t)
                 _name_txt = f" · {_cfg_clinic_name}" if _cfg_clinic_name else ""
                 st.sidebar.success(
-                    f"✓ Данные клиники активны{_name_txt}: "
-                    f"{len(clinic_s)} батчей, факт. частота "
-                    f"{obs_rate*100:.1f}% ({sum(clinic_s)}/{sum(clinic_t)})")
+                    (f"✓ Clinic data active{_name_txt}: {len(clinic_s)} batches, "
+                     f"observed rate {obs_rate*100:.1f}% ({sum(clinic_s)}/{sum(clinic_t)})"
+                     if _LANG == "English" else
+                     f"✓ Данные клиники активны{_name_txt}: "
+                     f"{len(clinic_s)} батчей, факт. частота "
+                     f"{obs_rate*100:.1f}% ({sum(clinic_s)}/{sum(clinic_t)})"))
             else:
                 clinic_s, clinic_t = None, None
                 st.sidebar.warning("clinic_config.json: пустой список batches")
         except Exception as _b_e:
             clinic_s, clinic_t = None, None
             st.sidebar.error(f"clinic_config.json: неверный формат batches ({_b_e})")
-    with st.sidebar.expander("Показать батчи клиники"):
-        st.caption("Редактируется только в файле clinic_config.json")
+    with st.sidebar.expander("Show clinic batches" if _LANG == "English" else
+                             "Показать батчи клиники"):
+        st.caption("Edited only in clinic_config.json" if _LANG == "English" else
+                   "Редактируется только в файле clinic_config.json")
         if clinic_s and clinic_t:
             st.dataframe(
                 {"Успехи": clinic_s, "Переносы": clinic_t},
@@ -915,11 +980,26 @@ else:
     use_clinic = False
 
 n_sim = st.sidebar.select_slider(
-    "Итераций MC", options=[500, 1000, 2000, 5000], value=2000)
+    "MC iterations" if _LANG == "English" else "Итераций MC",
+    options=[500, 1000, 2000, 5000], value=2000)
+
+with st.sidebar.expander(_t("reliability_settings"), expanded=False):
+    st.caption(
+        "These thresholds change only the displayed reliability category, not the probability calculation."
+        if _LANG == "English" else
+        "Пороги меняют только словесную категорию надёжности и не влияют на расчёт вероятности."
+    )
+    _rel_high_threshold = st.slider(_t("high_from"), 45, 80, 60, 1,
+                                    key="_rel_high_threshold")
+    _rel_moderate_threshold = st.slider(_t("moderate_from"), 20, 60, 35, 1,
+                                        key="_rel_moderate_threshold")
+    if _rel_moderate_threshold >= _rel_high_threshold:
+        _rel_moderate_threshold = max(20, _rel_high_threshold - 5)
 
 # ── Загрузка нейросети (L3) ───────────────────────────────────
 st.sidebar.markdown("---")
-st.sidebar.header("Нейросетевой модуль")
+_model_status_box = st.sidebar.expander(_t("model_status"), expanded=False)
+_model_status_box.markdown("**KAT · KAN + FT-Transformer**")
 
 @st.cache_resource(show_spinner="Загрузка нейросетевых моделей...")
 def get_nn_model():
@@ -928,23 +1008,24 @@ def get_nn_model():
 nn_model = get_nn_model()
 
 if nn_model is not None:
-    st.sidebar.success("KAT (KAN + FT-Transformer) загружен")
+    _model_status_box.success("KAT (KAN + FT-Transformer) loaded" if _LANG == "English" else
+                              "KAT (KAN + FT-Transformer) загружена")
 else:
     if not NN_LIBS_AVAILABLE:
         if "dll_error" in NN_LIBS_ERROR:
-            st.sidebar.error(
+            _model_status_box.error(
                 "**Ошибка DLL (fbgemm.dll)**\n\n"
                 "Запустите `fix_torch_dll.bat`\n\n"
                 "Работает FORTUNE+KPI без нейросети."
             )
         else:
-            st.sidebar.warning(
+            _model_status_box.warning(
                 "torch не установлен\n\n"
                 "Запустите `fix_torch_dll.bat`\n\n"
                 "Работает FORTUNE+KPI без нейросети."
             )
     else:
-        st.sidebar.info(
+        _model_status_box.info(
             "Файлы моделей не найдены.\n\n"
             "Поместите в `src/` или `models/`:\n"
             "- `Prediction_KAN.pth`\n"
@@ -954,8 +1035,7 @@ else:
         )
 
 # ── Загрузка CSDI Hybrid v3 (L5) ─────────────────────────────
-st.sidebar.markdown("---")
-st.sidebar.header("Diffusion модуль (L5)")
+_model_status_box.markdown("**CSDI Hybrid v3**")
 CSDI_MODEL_LOAD_ERROR = ""
 
 @st.cache_resource(show_spinner="Загрузка CSDI Hybrid v3...")
@@ -990,7 +1070,10 @@ def _csdi_run_and_cache(patient: dict, key: tuple):
     """
     if (st.session_state.get("_csdi_last_key") != key
             or "csdi_result" not in st.session_state):
-        with st.spinner("Генерация CSDI-траекторий (DDIM, 50 шагов)..."):
+        _csdi_spinner = ("Generating CSDI trajectories (DDIM, 50 steps)…"
+                         if _LANG == "English" else
+                         "Генерация CSDI-траекторий (DDIM, 50 шагов)…")
+        with st.spinner(_csdi_spinner):
             result = csdi_model.mc_sample(patient, n_samples=1000)
         st.session_state["csdi_result"]    = result
         st.session_state["_csdi_last_key"] = key
@@ -998,35 +1081,38 @@ def _csdi_run_and_cache(patient: dict, key: tuple):
 
 
 if csdi_model is not None:
-    st.sidebar.success(f"CSDI Hybrid v3 загружен "
-                       f"(порог: {csdi_model.best_threshold:.2f})")
+    _model_status_box.success(
+        (f"CSDI Hybrid v3 loaded (threshold: {csdi_model.best_threshold:.2f})"
+         if _LANG == "English" else
+         f"CSDI Hybrid v3 загружена (порог: {csdi_model.best_threshold:.2f})")
+    )
 elif not _CSDI_CLASS_READY:
-    st.sidebar.info(
+    _model_status_box.info(
         "CSDI Hybrid v3 не загружен.\n\n"
         f"Причина: `{CSDI_LOAD_ERROR or 'src/embryo_csdi_v3.py не найден'}`\n\n"
         "Проверьте файл `src/embryo_csdi_v3.py` и зависимости L5."
     )
 elif CSDI_MODEL_LOAD_ERROR:
-    st.sidebar.info(
+    _model_status_box.info(
         "Модель CSDI найдена, но не загрузилась.\n\n"
         f"Причина: `{CSDI_MODEL_LOAD_ERROR}`\n\n"
         "Проверьте файлы в `models/embryo_v3_model/`."
     )
 else:
-    st.sidebar.info(
+    _model_status_box.info(
         "Модель не найдена.\n\n"
         "Поместите папку `embryo_v3_model/` в `models/`.\n\n"
         "Обучение: `python src/embryo_csdi_v3.py`"
     )
 
 # ── Статус GNN модели (Graph Transformer) ─────────────────────
-st.sidebar.markdown("---")
-st.sidebar.header("Graph модуль (GAT)")
+_model_status_box.markdown("**GAT · Graph Transformer**")
 
 if _gnn_bundle.get('available'):
-    st.sidebar.success("GNN (Graph Transformer) загружен")
+    _model_status_box.success("GNN (Graph Transformer) loaded" if _LANG == "English" else
+                              "GNN (Graph Transformer) загружена")
 elif not _GNN_IMPORT_OK:
-    st.sidebar.warning(
+    _model_status_box.warning(
         "torch-geometric не установлен\n\n"
         "Запустите `INSTALL.bat` (шаг 8) или:\n"
         "```\npip install torch-scatter torch-sparse \\\n"
@@ -1037,23 +1123,28 @@ elif not _GNN_IMPORT_OK:
     )
 else:
     _gnn_err_short = _gnn_bundle.get('error', 'Файл не найден')[:80]
-    st.sidebar.info(
+    _model_status_box.info(
         "GNN модель не загружена.\n\n"
         f"Причина: `{_gnn_err_short}`\n\n"
         "Поместите `gnn_ivf_model.pt` в `models/`.\n\n"
         "Обучение: `python gnn_ivf_562.py clinical_protocols.xlsx`"
     )
 
-run_btn = st.sidebar.button("Запустить расчёт", use_container_width=True,
+run_btn = st.sidebar.button(_t("run"), use_container_width=True,
                              type="primary")
 
 # ── ГЛАВНАЯ СТРАНИЦА ──────────────────────────────────────────
-st.title("IVF Digital Twin")
-st.markdown("""
+st.title("IVF Digital Twin · Clinical UI")
+_disclaimer_text = (
+    "<b>Clinical decision support only.</b> Predictions are probabilistic estimates. "
+    "Final management is determined by the fertility specialist."
+    if _LANG == "English" else
+    "<b>Только для поддержки клинического решения.</b> Все прогнозы являются "
+    "вероятностными оценками. Окончательную тактику определяет врач-репродуктолог."
+)
+st.markdown(f"""
 <div class="disclaimer">
-<b>Только для поддержки клинического решения.</b> Все прогнозы являются
-вероятностными оценками на основе опубликованных моделей. Окончательное
-решение принимает врач-репродуктолог.
+{_disclaimer_text}
 <br>IVF Digital Twin v7.0 · <i>from in vitro to in silico</i>
 </div>
 """, unsafe_allow_html=True)
@@ -1062,12 +1153,41 @@ if not run_btn:
     # If we have cached results, skip the welcome screen and proceed to show results + PDF
     if st.session_state.get("_pdf_res") is None:
         col1, col2, col3 = st.columns(3)
-        col1.info("← Введите данные пациентки в панели слева")
-        col2.info("Нажмите **Запустить расчёт**")
-        col3.info("Получите полный отчёт с графиками")
+        if _LANG == "English":
+            col1.info("← Enter patient data in the sidebar")
+            col2.info("Select **Calculate prognosis**")
+            col3.info("Review the concise clinical report")
+        else:
+            col1.info("← Введите данные пациентки в панели слева")
+            col2.info("Нажмите **Рассчитать прогноз**")
+            col3.info("Получите лаконичное клиническое резюме")
 
-        with st.expander("О системе"):
-            st.markdown("""
+        with st.expander(_t("about_system")):
+            if _LANG == "English":
+                st.markdown("""
+        **IVF Digital Twin v7.0** is an integrated IVF outcome-prediction
+        system combining seven independent assessment layers.
+
+        *from in vitro to in silico.*
+
+        | Layer | Method |
+        |---|---|
+        | L1 Stochastic pipeline | ZINB + binomial filters (S1–S6b) |
+        | L2 Transfer ensemble | FORTUNE + KPIScore (logit weighting) |
+        | L3 Neural network | KAN + FT-Transformer + Venn–Abers (KAT) |
+        | L4 Response cluster | Nearest 18D centroid |
+        | L5 Laboratory forecast | CSDI-Transformer + LightGBM + Conformal PI |
+        | L6 Patient graph | Graph Attention Transformer (GAT) + KAT ensemble |
+        | **L7 BEFE** | **Bayesian Evidence Fusion: Prior → Evidence → Posterior** |
+
+        **L7 (BEFE)** combines the layers into a single posterior estimate.
+        The mechanistic L1 prior is updated with neural evidence from KAT and
+        GAT, verified by the CSDI laboratory model and accompanied by clinical
+        and embryology OOD checks. The clinician-facing report presents the
+        final probability together with an explicit reliability assessment.
+        """)
+            else:
+                st.markdown("""
         **IVF Digital Twin v7.0** — интегрированная система прогнозирования
         исходов ЭКО, объединяющая 7 независимых слоёв оценки.
 
@@ -1083,12 +1203,10 @@ if not run_btn:
         | L6 Граф пациентов | Graph Attention Transformer (GAT) + ансамбль с KAT |
         | **L7 BEFE** | **Bayesian Evidence Fusion: Prior → Evidence → Posterior** |
 
-        **L7 (BEFE)** объединяет все уровни в единый posterior с доверительным
-        интервалом: механистический приор (L1) обновляется независимым
-        нейросетевым доказательством (L3 + L6), верифицированным диффузионной
-        моделью (L5), с двойным OOD-детектором (клинический + эмбриологический).
-        Итоговая вероятность — единственная цифра, которую видит врач, с явной
-        оценкой надёжности.
+        **L7 (BEFE)** объединяет все уровни в единый posterior: механистический
+        приор L1 обновляется доказательствами KAT и GAT, верифицируется CSDI и
+        сопровождается клиническим и эмбриологическим OOD-контролем. Врач видит
+        итоговую вероятность вместе с явной оценкой надёжности.
         """)
         st.stop()
     else:
@@ -1103,7 +1221,9 @@ if run_btn:
     patient = PatientInput(female_age=float(age), amh=float(amh),
                            afc=int(afc), bmi=float(bmi))
 
-    with st.spinner(f"Выполняется {n_sim} итераций Monte Carlo..."):
+    _mc_spinner = (f"Running {n_sim} Monte Carlo iterations…" if _LANG == "English"
+                   else f"Выполняется {n_sim} итераций Monte Carlo…")
+    with st.spinner(_mc_spinner):
         np.random.seed(42)
         res = run_pipeline_extended(
             patient, known=known,
@@ -1243,7 +1363,7 @@ else:
 
 # ── БЛОК РЕЗУЛЬТАТОВ ─────────────────────────────────────────
 st.markdown("---")
-st.header("Результаты")
+st.header(_t("results"))
 
 ca   = res['cluster_analysis']
 post = res['posterior']
@@ -1299,6 +1419,35 @@ _w_gnn      = _gnn_result.get('w_gnn', 0.35)
 st.session_state['_pdf_p_gnn_ens'] = _p_gnn_ens
 st.session_state['_pdf_p_gnn_raw'] = _p_gnn_raw
 st.session_state['_pdf_w_gnn']     = _w_gnn
+
+# ── CSDI выполняется как часть общего расчёта, а не при открытии вкладки ──
+# Имена признаков ниже — неизменяемый контракт модели; UI-подписи переводятся
+# отдельно и не влияют на вход CSDI.
+if csdi_model is not None:
+    try:
+        _foll_count = follicles if follicles is not None else int(afc)
+        _okk_med = max(1, int(res['okk_med']))
+        _mii_med = max(1, int(res['mii_med']))
+        _pn2_med = max(1, int(res['pn2_med']))
+        _okk_rate = min(1.0, _okk_med / max(_foll_count, 1))
+        _fert_rate = min(1.0, _pn2_med / max(_mii_med, 1))
+        _kpi = float(res['kpi_score_median'])
+        _patient_csdi_initial = {
+            "Количество фолликулов": float(_foll_count),
+            "Число ОКК": float(_okk_med),
+            "Число инсеминированных": float(_mii_med),
+            "2 pN": float(_pn2_med),
+            "Частота получения ОКК": _okk_rate,
+            "Частота оплодотворения": _fert_rate,
+            "KPIScore": _kpi,
+        }
+        _csdi_initial_key = (
+            _foll_count, _okk_med, _mii_med, _pn2_med,
+            round(_okk_rate, 4), round(_fert_rate, 4), round(_kpi, 2),
+        )
+        _csdi_run_and_cache(_patient_csdi_initial, _csdi_initial_key)
+    except Exception as _csdi_initial_exc:
+        st.session_state["_csdi_initial_error"] = str(_csdi_initial_exc)
 
 # ── L7 BEFE — считаем здесь, чтобы posterior был главной цифрой Результатов ──
 _befe_res, _befe_map = (None, {})
@@ -1384,27 +1533,55 @@ if _BEFE_OK:
         _befe_res, _befe_map = None, {}
 st.session_state['_pdf_befe'] = _befe_res
 
-# ── Краткий отчёт для пациента: рисуем вместо полных вкладок и выходим ──────
-if st.session_state.get("_view_mode", "").startswith("Краткий"):
+# ── Clinical summary: concise clinician-first result page ──────────────────
+if st.session_state.get("_view_mode", "").startswith("Clinical"):
     _brief_ok = False
     try:
-        import patient_brief
+        import importlib as _importlib
+        import importlib.util as _importlib_util
+        _brief_path = os.path.join(_APP_DIR, "patient_brief.py")
+        if os.path.exists(_brief_path):
+            _brief_spec = _importlib_util.spec_from_file_location(
+                "clinical_ui_patient_brief", _brief_path
+            )
+            patient_brief = _importlib_util.module_from_spec(_brief_spec)
+            _brief_spec.loader.exec_module(patient_brief)
+        else:
+            patient_brief = _importlib.import_module("patient_brief")
         patient_brief.render(globals())
         _brief_ok = True
     except Exception as _brief_exc:
         st.warning(
-            f"Краткий отчёт недоступен, показан полный интерфейс: {_brief_exc}"
+            (f"Clinical summary is unavailable; detailed view shown: {_brief_exc}"
+             if _LANG == "English" else
+             f"Клиническое резюме недоступно, показан подробный интерфейс: {_brief_exc}")
         )
     if _brief_ok:
         st.stop()
 
-# ── Кнопка возврата к краткому отчёту (расширенный режим) ───────────────────
-if _BRIEF_AVAILABLE and not st.session_state.get("_view_mode", "").startswith("Краткий"):
+# ── Complete report: original RU body, translated equivalent for English ──
+if (st.session_state.get("_view_mode") == "Detailed report"
+        and _LANG == "English"):
     _col_back, _ = st.columns([2, 8])
     with _col_back:
-        if st.button("← Краткий отчёт", key="_to_brief_report",
-                     help="Вернуться к краткому отчёту для пациента"):
-            st.session_state["_view_mode"] = "Краткий (для пациента)"
+        if st.button(_t("back_summary"), key="_full_to_brief_report",
+                     help=_t("clinical_summary"), use_container_width=True):
+            st.session_state["_view_mode"] = "Clinical summary"
+            st.rerun()
+    try:
+        from legacy_full_report import render as _render_legacy_full_report
+        _render_legacy_full_report(globals(), "English")
+    except Exception as _full_exc:
+        st.error(f"The complete report could not be rendered: {_full_exc}")
+    st.stop()
+
+# ── Кнопка возврата к краткому отчёту (расширенный режим) ───────────────────
+if _BRIEF_AVAILABLE and not st.session_state.get("_view_mode", "").startswith("Clinical"):
+    _col_back, _ = st.columns([2, 8])
+    with _col_back:
+        if st.button(_t("back_summary"), key="_to_brief_report",
+                     help=_t("clinical_summary")):
+            st.session_state["_view_mode"] = "Clinical summary"
             st.rerun()
 
 # ── Визуальный summary результатов: L7 posterior как главная цифра ─────────
@@ -1417,15 +1594,19 @@ else:
     _gat_display = "н/д"
 
 if _befe_res is not None:
-    _main_label = "P(беременность) · BEFE"
+    _main_label = _t("main_outcome")
     _main_value = f"{_befe_res.posterior*100:.1f}%"
+    _display_reliability = _reliability_label(
+        _LANG, int(_befe_res.reliability),
+        int(_rel_high_threshold), int(_rel_moderate_threshold),
+    )
     _main_sub = (
-        f"Итоговая вероятность L7 · 95% ДИ: "
+        f"{_t('clinical_corridor')}: "
         f"{_befe_res.ci_low*100:.1f}–{_befe_res.ci_high*100:.1f}% · "
-        f"Надёжность: {_befe_res.reliability}/100"
+        f"{_t('reliability')}: {_display_reliability} ({_befe_res.reliability}/100)"
     )
 else:
-    _main_label = "P(беременность) на перенос"
+    _main_label = _t("per_transfer")
     _main_value = f"{res['p_per_transfer']*100:.1f}%"
     _main_sub = "Fallback L1–L2: BEFE недоступен для этого расчёта"
 
@@ -1462,8 +1643,11 @@ if p_cancel > 0.05:
 
 # ── Вкладки ───────────────────────────────────────────────────
 tab_pipeline, tab_preg, tab_risk, tab_bank, tab_trp, tab_cluster, tab_diff, tab_gat, tab_befe, tab_llm = st.tabs(
-    ["L1 Pipeline", "L2 Беременность", "Риски", "Банкинг",
-     "TRP", "L4 Кластер", "L5 Diffusion", "L6 GAT Graph", "L7 BEFE", "LLM"])
+    (["L1 Pipeline", "L2 Pregnancy", "Risks", "Banking", "TRP",
+      "L4 Response", "L5 Diffusion", "L6 GAT Graph", "L7 BEFE", "LLM"]
+     if _LANG == "English" else
+     ["L1 Pipeline", "L2 Беременность", "Риски", "Банкинг",
+      "TRP", "L4 Кластер", "L5 Diffusion", "L6 GAT Graph", "L7 BEFE", "LLM"]))
 
 # ── TAB: Pipeline ─────────────────────────────────────────────
 with tab_pipeline:
@@ -1499,7 +1683,7 @@ with tab_pipeline:
             height=400,
             margin=dict(l=120, r=30, t=40, b=40),
         )
-        st.plotly_chart(funnel, use_container_width=True)
+        _plot_chart(funnel, use_container_width=True)
         st.session_state["_pdf_fig_funnel"] = funnel
 
     with col_v:
@@ -1536,7 +1720,7 @@ with tab_pipeline:
         )
         vfig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
         vfig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-        st.plotly_chart(vfig, use_container_width=True)
+        _plot_chart(vfig, use_container_width=True)
         st.session_state["_pdf_fig_violin"] = vfig
 
     with st.expander("95% доверительные интервалы по стадиям"):
@@ -1602,7 +1786,7 @@ with tab_preg:
         )
         bar_fig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
         bar_fig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-        st.plotly_chart(bar_fig, use_container_width=True)
+        _plot_chart(bar_fig, use_container_width=True)
         st.session_state["_pdf_fig_bar"] = bar_fig
 
     with col_b:
@@ -1645,7 +1829,7 @@ with tab_preg:
         )
         afig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
         afig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-        st.plotly_chart(afig, use_container_width=True)
+        _plot_chart(afig, use_container_width=True)
         st.session_state["_pdf_fig_attempts"] = afig
         st.caption(f"Снижение per-attempt: \u03b1={curve['decay_alpha']:.2f}  (Malizia et al. NEJM 2009)")
 
@@ -1741,7 +1925,7 @@ with tab_cluster:
         )
         pca_fig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
         pca_fig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-        st.plotly_chart(pca_fig, use_container_width=True)
+        _plot_chart(pca_fig, use_container_width=True)
         st.session_state["_pdf_fig_pca"] = pca_fig
 
     with col_info:
@@ -1829,7 +2013,7 @@ with tab_risk:
         )
         rfig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
         rfig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-        st.plotly_chart(rfig, use_container_width=True)
+        _plot_chart(rfig, use_container_width=True)
         st.session_state["_pdf_fig_risks"] = rfig
 
     with col_r2:
@@ -1869,7 +2053,7 @@ with tab_risk:
         )
         ofig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
         ofig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-        st.plotly_chart(ofig, use_container_width=True)
+        _plot_chart(ofig, use_container_width=True)
 
         st.markdown(f"""
         | Показатель | Значение |
@@ -1966,7 +2150,7 @@ with tab_bank:
             )
             f1.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
             f1.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-            st.plotly_chart(f1, use_container_width=True)
+            _plot_chart(f1, use_container_width=True)
 
         with col_b_b:
             st.markdown("**Сколько MII набанковать (обратная задача)**")
@@ -1999,7 +2183,7 @@ with tab_bank:
             )
             f2.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
             f2.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-            st.plotly_chart(f2, use_container_width=True)
+            _plot_chart(f2, use_container_width=True)
 
         st.markdown("**Клиническая сводка для банкинга**")
         need50 = eb['euploid_for_preg'][0.50]
@@ -2261,7 +2445,7 @@ with tab_diff:
             )
             blfig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
             blfig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-            st.plotly_chart(blfig, use_container_width=True)
+            _plot_chart(blfig, use_container_width=True)
 
         # ─ График 2: TGBDR ───────────────────────────────────
         with col_d2:
@@ -2311,7 +2495,7 @@ with tab_diff:
             )
             tfig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
             tfig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-            st.plotly_chart(tfig, use_container_width=True)
+            _plot_chart(tfig, use_container_width=True)
 
         # ── Второй ряд: промежуточные переменные ─────────────
         st.markdown("#### Промежуточные стадии эмбриогенеза")
@@ -2360,7 +2544,7 @@ with tab_diff:
             )
             gbfig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
             gbfig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-            st.plotly_chart(gbfig, use_container_width=True)
+            _plot_chart(gbfig, use_container_width=True)
 
         with col_d4:
             st.markdown("**Blast rate — MC vs CSDI**")
@@ -2406,7 +2590,7 @@ with tab_diff:
             )
             brfig.update_xaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
             brfig.update_yaxes(gridcolor="rgba(200,210,220,0.35)", zeroline=False, tickfont=dict(size=11))
-            st.plotly_chart(brfig, use_container_width=True)
+            _plot_chart(brfig, use_container_width=True)
 
         # ── KS-сводная таблица ────────────────────────────────
         st.markdown("#### KS-тест: итоговая верификация")
@@ -2560,7 +2744,7 @@ with tab_gat:
         # ── Основной график ───────────────────────────────────
         _fig_gnn_tab = st.session_state.get('_pdf_fig_gnn')
         if _fig_gnn_tab is not None:
-            st.plotly_chart(_fig_gnn_tab, use_container_width=True)
+            _plot_chart(_fig_gnn_tab, use_container_width=True)
         else:
             # Строим на лету если не был сохранён (например после reload)
             try:
@@ -2572,7 +2756,7 @@ with tab_gat:
                 _fig_gnn_tab = _apply_gnn_style(_fig_gnn_tab)
                 if _fig_gnn_tab is not None:
                     st.session_state['_pdf_fig_gnn'] = _fig_gnn_tab
-                    st.plotly_chart(_fig_gnn_tab, use_container_width=True)
+                    _plot_chart(_fig_gnn_tab, use_container_width=True)
                 else:
                     st.warning("Не удалось построить граф: данные соседей недоступны.")
             except Exception as _gnn_fig_err:

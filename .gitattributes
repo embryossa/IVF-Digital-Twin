@@ -1,0 +1,28 @@
+# Normalize line endings so a Windows clinic machine and a Linux CI runner
+# see the same bytes. Without this, every file the other platform touches
+# shows up as fully rewritten in diffs.
+* text=auto eol=lf
+
+# Windows launchers must keep CRLF — cmd.exe mis-parses LF-only .bat files.
+*.bat text eol=crlf
+
+# Shell scripts must keep LF regardless of platform.
+*.sh text eol=lf
+
+# Binary — never touch.
+*.png binary
+*.pdf binary
+*.ttf binary
+*.xlsx binary
+*.pt   binary
+*.pth  binary
+*.npz  binary
+*.joblib binary
+*.pkl  binary
+
+# Notebooks: diff as text but do not merge automatically.
+*.ipynb text merge=binary
+
+# Keep generated/vendored files out of language statistics.
+docs/reference/*.html linguist-documentation
+analytics/*.ipynb     linguist-documentation
