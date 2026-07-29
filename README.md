@@ -315,26 +315,6 @@ models/embryo_v3_model/
 └── training_history.json
 ```
 
-### Layer 6 — Graph Attention Transformer (GAT)
-
-A patient-similarity graph model that formalizes the clinical intuition of "I've seen patients like this before."
-
-**Clinical intuition:** Rather than treating each patient as an isolated data point, GAT constructs a clinical similarity network across the entire cohort. Each patient is a node in an 18-dimensional space; edges are weighted by cosine similarity of clinical and embryological features. The graph topology is determined exclusively by clinical parameters — KAT scores are deliberately excluded from edge construction to ensure the graph reflects biological resemblance, not prior model beliefs.
-
-**Architecture:**
-- **Message passing with learned attention**: each node aggregates information from neighbours, weighting by learned attention scores
-- **3 GAT layers** → node embedding encodes both individual characteristics and neighbourhood context
-- **Two output heads**: P(pregnancy) classification + continuous PRAI score (multi-task)
-- **18 node features**: age, AFC, OCC, fertilization outcomes, blastocyst counts, quality rates, KPI Score, KAT ensemble probability
-
-**Training:** 1,172 real IVF clinical protocols from a single centre. Transductive cross-validation (5-fold): validation patients remain visible in the graph but outcome labels are masked. Label smoothing ε = 0.08, L2 regularisation, attention dropout.
-
-**Ensemble:** The final GAT Ensemble score combines graph and KAT predictions:
-```
-P(pregnancy) = w_GNN × P_GNN + (1 − w_GNN) × P_KAT
-```
-where w_GNN ∈ [0.25, 0.40] is determined automatically during cross-validation to maximise AUC. The two models agree with r = 0.79, and their structured partial disagreement is precisely what makes the ensemble valuable.
-
 **Clinical interpretability:** The model can display the ten training cohort patients most similar to the current patient (ranked by cosine similarity), with their documented outcomes — a direct, intuitive contextualisation not available from any scalar probability score.
 
 | Metric | GNN alone | KAT Ensemble | GAT+KAT |
@@ -342,8 +322,6 @@ where w_GNN ∈ [0.25, 0.40] is determined automatically during cross-validation
 | AUC-ROC | 0.632 | 0.652 | ~0.658–0.665 |
 | Brier Score | 0.241 | 0.233 | ~0.229 |
 | F1 Score | 0.623 | — | — |
-
-**Position in pipeline:** L6 operates downstream of KAT (L3) and receives the KAT probability as a node-level attribute — allowing the attention mechanism to weight it alongside clinical parameters while forming its own structural judgement.
 
 ---
 
