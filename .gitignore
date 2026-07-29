@@ -1,7 +1,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Secrets and proprietary modules — highest priority, never negate these
 # ─────────────────────────────────────────────────────────────────────────────
-src/crypt_engine.py       # embeds the model decryption key; commercial repo only
+# Embeds the model decryption key — commercial repo only.
+# NB: git has no trailing-comment syntax. A comment after a pattern on the
+# same line becomes part of the pattern and silently matches nothing, which
+# is exactly how this rule failed to fire the first time it was written.
+src/crypt_engine.py
 *.lic
 *.key
 *.pem
