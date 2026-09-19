@@ -11,10 +11,15 @@
 > |---|---|
 > | `p_per_transfer` | L1–L2 per-transfer probability, mean over all Monte Carlo scenarios (including those with no embryo to transfer) |
 > | `p_overall_cycle` | L1–L4 mechanistic cycle probability; **not** the cycle probability shown in the app, which is anchored to L7 |
-> | `p_kat_raw` | Unchanged 7.0 definition: `nn_prediction` mean over **all** scenarios — KAT when its weights are loaded, otherwise the FORTUNE+KPI proxy. The KAT value that enters L7 (mean over scenarios with a transfer, none without weights) is not this column |
+> | `p_kat_raw` | Unchanged 7.0 definition, kept for comparability: `nn_prediction` mean over **all** scenarios — KAT when its weights are loaded, otherwise the FORTUNE+KPI proxy |
+> | `kat_transfer_mean`, `kat_transfer_ci_low`, `kat_transfer_ci_high` | New in 7.1 (as in the 7.1 desktop history export): KAT as it enters L7 — mean and bootstrap interval over scenarios with a transfer; blank without KAT weights. Use these to analyse the 7.1 KAT layer |
 > | `p_csdi` | Filled whenever CSDI ran; whether it entered L7 depends on its applicability check |
 > | `bayes_mean` | L3 Beta-Binomial posterior with the clinic batches; does not enter L7 |
 > | `DIGITAL TWIN` | L7 (BEFE) probability of clinical pregnancy **per transfer**; `p_overall_cycle` only as a fallback when L7 is unavailable |
+>
+> The app and the batch scripts write the same schema (`ivf_core.save_analytics_record`,
+> 80 columns). A `dt_predictions.csv` with an older header is renamed to
+> `dt_predictions_schema_v<N>_<time>.csv` and a new file is started.
 >
 > The outcome is clinical pregnancy confirmed by ultrasound (ectopic counts as
 > positive), not live birth. Compare per-transfer predictions with per-transfer

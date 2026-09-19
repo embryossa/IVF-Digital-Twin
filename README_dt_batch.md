@@ -39,8 +39,9 @@ python batch_analysis.py <input.xlsx> [output_dir] [--clinic "Название �
 
 ## Выходные файлы
 
-1. **`dt_analytics_data/dt_predictions.csv`** — схема `_save_analytics()` из
-   `app.py` плюс колонки GNN: медианы и перцентили воронки, `p_per_transfer`,
+1. **`dt_analytics_data/dt_predictions.csv`** — общая схема приложения и пакетных
+   скриптов (`ivf_core.save_analytics_record`, 80 колонок; файл со старым
+   заголовком архивируется): медианы и перцентили воронки, `p_per_transfer`,
    `p_overall_cycle`, байесовский posterior, KAT/NVSA, CSDI, GAT, кластер L4,
    OHSS, банкинг Esteves.
 2. **`<output_dir>/OPU_table_filled_<время>.xlsx`** — формат OPU_table с колонкой
@@ -68,7 +69,10 @@ python batch_analysis.py <input.xlsx> [output_dir] [--clinic "Название �
 - **L3 KAT** — нужны `models/Prediction_KAN.pth`, `models/FTTransformer.joblib`
   (+ `KAT_ensemble_raw_weights.pth`, `isotonic_ensemble.pkl`) и `torch`. Без них
   KAT в L7 не входит, а в колонку `p_kat_raw` (определение 7.0 — среднее по всем
-  сценариям) пишется прокси FORTUNE+KPI; источник видно в `nn_prediction.source`. Кодирование признаков
+  сценариям) пишется прокси FORTUNE+KPI; источник — в колонке `nn_source`.
+  KAT в том виде, в каком она входит в L7, — в колонках `kat_transfer_mean`,
+  `kat_transfer_ci_low`, `kat_transfer_ci_high` (пусто без весов), как в
+  экспорте истории настольной 7.1. Кодирование признаков
   FT-Transformer исправляется при запуске (`src/mambular_ple_fix.py`), как в
   клинической сборке.
 - **L5 CSDI** — `models/embryo_v3_model/`; в L7 входит только внутри области

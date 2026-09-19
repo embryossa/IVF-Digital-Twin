@@ -572,190 +572,31 @@ else:
 _ANALYTICS_DIR = _Path(_APP_DIR) / "dt_analytics_data"
 _ANALYTICS_CSV = _ANALYTICS_DIR / "dt_predictions.csv"
 
-_ANALYTICS_COLUMNS = [
-    # Идентификация
-    "record_id", "timestamp", "clinic_name",
-    # Пациент (заполняется при генерации PDF — трейсинг с реальными данными)
-    "patient_name", "patient_id",
-    # Входные данные пациента
-    "age", "amh", "afc", "bmi", "attempt_number", "sperm_source", "follicles_tvp",
-    # Известные mid-cycle значения (байесовское обновление)
-    "known_okk", "known_mii", "known_pn2", "known_blasts", "known_good", "known_euploid",
-    # Медианы воронки (MC)
-    "med_okk", "med_mii", "med_pn2", "med_blasts", "med_good", "med_euploid", "med_warmed",
-    # Перцентили (P2.5 / P97.5) для ключевых стадий
-    "p025_okk", "p975_okk", "p025_blasts", "p975_blasts", "p025_good", "p975_good",
-    # Ключевые прогнозы беременности
-    "p_per_transfer", "p_cum_if_viable", "p_overall_cycle", "p_viable",
-    "p_cancel_risk", "rate_ci_low", "rate_ci_high",
-    # Байесовский posterior
-    "bayes_mean", "bayes_ci_low", "bayes_ci_high", "bayes_prior_mean", "bayes_prior_type",
-    # Нейросеть L3: KAT / NVSA
-    "p_kat_raw", "p_nvsa", "ci_kat_low", "ci_kat_high", "ci_nvsa_low", "ci_nvsa_high",
-    # CSDI L5 (заполняется при открытии вкладки Diffusion)
-    "p_csdi", "csdi_ci_low", "csdi_ci_high",
-    # Кластер L4
-    "dominant_cluster", "cluster_c0_prob", "cluster_c1_prob", "cluster_c2_prob",
-    # Риски
-    "ohss_moderate", "ohss_severe", "ohss_any",
-    "p_no_blast", "p_no_good_blast",
-    # Банкинг (Esteves)
-    "banking_p_per_mii", "banking_expected_euploid",
-    # Реальный исход (заполняется позже вручную)
-    "real_outcome", "outcome_date", "notes",
-]
-
-
-def _save_analytics(res, _eb, age, amh, afc, bmi, attempt,
-                    sperm_source, follicles, known, clinic_name,
-                    patient_name="", patient_id="",
-                    csdi_result=None):
+def _save_analytics(result, clinic_name, patient_name="", patient_id=""):
     """
-    Записывает одну строку с результатами расчёта Digital Twin в master CSV.
+    Записывает одну строку расчёта в master CSV dt_predictions.csv.
     Вызывается один раз при успешной генерации PDF-отчёта.
-    Возвращает record_id (str) или None при ошибке.
+
+    7.1: та же схема и тот же writer, что у пакетных скриптов
+    (ivf_core.save_analytics_record): p_kat_raw в определении 7.0 плюс
+    kat_transfer_* — KAT в том виде, в каком она входит в L7. Файл со старой
+    схемой архивируется, а не дописывается со сдвигом колонок.
+    Параметры пациентки берутся из рассчитанного случая, а не из текущих
+    полей боковой панели. Возвращает record_id (str) или None при ошибке.
     """
     try:
-        _ANALYTICS_DIR.mkdir(parents=True, exist_ok=True)
-
-        post  = res.get("posterior", {})
-        ca    = res.get("cluster_analysis", {})
-        ohss  = res.get("ohss", {})
-        empty = res.get("empty", {})
-        _nn   = res.get("nn_prediction", {})
-        _nvsa = res.get("nn_nvsa", {})
-
-        probs   = ca.get("cluster_probs", {})
-        ci_kat  = _nn.get("base_prob_ci",  (None, None))
-        ci_nvsa = _nvsa.get("adjusted_ci", (None, None))
-
-        # CSDI — может быть None если вкладка Diffusion ещё не открывалась
-        _p_csdi    = None
-        _csdi_ci_l = None
-        _csdi_ci_h = None
-        if csdi_result and isinstance(csdi_result, dict):
-            _p_csdi    = csdi_result.get("P_pregnancy")
-            _ci95      = csdi_result.get("CI_95", (None, None))
-            _csdi_ci_l = _ci95[0] if _ci95 else None
-            _csdi_ci_h = _ci95[1] if _ci95 else None
-
-        # Банкинг — явная проверка типа, не через bool(_eb)
-        _p_mii  = None
-        _exp_eu = None
-        if isinstance(_eb, dict):
-            _p_mii = _eb.get("p_per_mii")          # всегда float в _compute_esteves_banking
-            _fwd   = _eb.get("forward_at_median")   # None если mii_med == 0
-            if isinstance(_fwd, dict):
-                _exp_eu = _fwd.get("mean")
-
-        # Перцентили из симуляций
-        def _pct(arr, q):
-            try:
-                return int(np.percentile(arr, q))
-            except Exception:
-                return ""
-
-        def _r4(v):
-            """Округление до 4 знаков; None → пустая строка."""
-            if v is None:
-                return ""
-            try:
-                return round(float(v), 4)
-            except Exception:
-                return ""
-
-        row = {
-            # Идентификация
-            "record_id":        str(_uuid.uuid4()),
-            "timestamp":        datetime.now().isoformat(timespec="seconds"),
-            "clinic_name":      clinic_name or "",
-            # Пациент
-            "patient_name":     patient_name or "",
-            "patient_id":       patient_id   or "",
-            # Входные данные
-            "age":              age,
-            "amh":              amh,
-            "afc":              afc,
-            "bmi":              bmi,
-            "attempt_number":   attempt,
-            "sperm_source":     sperm_source,
-            "follicles_tvp":    follicles if follicles else "",
-            # Known mid-cycle
-            "known_okk":        known.okk     if known and known.okk     is not None else "",
-            "known_mii":        known.mii     if known and known.mii     is not None else "",
-            "known_pn2":        known.pn2     if known and known.pn2     is not None else "",
-            "known_blasts":     known.blasts  if known and known.blasts  is not None else "",
-            "known_good":       known.good    if known and known.good    is not None else "",
-            "known_euploid":    known.euploid if known and known.euploid is not None else "",
-            # Медианы воронки
-            "med_okk":          res.get("okk_med", ""),
-            "med_mii":          res.get("mii_med", ""),
-            "med_pn2":          res.get("pn2_med", ""),
-            "med_blasts":       res.get("blasts_med", ""),
-            "med_good":         res.get("good_med", ""),
-            "med_euploid":      res.get("euploid_med", ""),
-            "med_warmed":       res.get("warmed_med", ""),
-            # Перцентили
-            "p025_okk":         _pct(res.get("sim_okk", []), 2.5),
-            "p975_okk":         _pct(res.get("sim_okk", []), 97.5),
-            "p025_blasts":      _pct(res.get("sim_blasts", []), 2.5),
-            "p975_blasts":      _pct(res.get("sim_blasts", []), 97.5),
-            "p025_good":        _pct(res.get("sim_good", []), 2.5),
-            "p975_good":        _pct(res.get("sim_good", []), 97.5),
-            # Прогнозы беременности
-            "p_per_transfer":   _r4(res.get("p_per_transfer", 0)),
-            "p_cum_if_viable":  _r4(res.get("p_cum_if_viable", 0)),
-            "p_overall_cycle":  _r4(res.get("p_overall_cycle", 0)),
-            "p_viable":         _r4(res.get("p_viable", 0)),
-            "p_cancel_risk":    _r4(np.mean(res["sim_okk"] == 0)),
-            "rate_ci_low":      _r4(res.get("rate_ci", (0, 0))[0]),
-            "rate_ci_high":     _r4(res.get("rate_ci", (0, 0))[1]),
-            # Байес
-            "bayes_mean":       _r4(post.get("mean", 0)),
-            "bayes_ci_low":     _r4(post.get("ci_low", 0)),
-            "bayes_ci_high":    _r4(post.get("ci_high", 0)),
-            "bayes_prior_mean": _r4(post.get("prior_mean", 0)),
-            "bayes_prior_type": post.get("prior_type", ""),
-            # Нейросеть
-            "p_kat_raw":        _r4((_nn.get("base_prob_mean")))   if _nn.get("base_prob_mean")  is not None else "",
-            "p_nvsa":           _r4(_nvsa.get("adjusted_mean"))    if _nvsa.get("adjusted_mean") is not None else "",
-            "ci_kat_low":       _r4(ci_kat[0])  if ci_kat[0]  is not None else "",
-            "ci_kat_high":      _r4(ci_kat[1])  if ci_kat[1]  is not None else "",
-            "ci_nvsa_low":      _r4(ci_nvsa[0]) if ci_nvsa[0] is not None else "",
-            "ci_nvsa_high":     _r4(ci_nvsa[1]) if ci_nvsa[1] is not None else "",
-            # CSDI
-            "p_csdi":           _r4(_p_csdi)    if _p_csdi    is not None else "",
-            "csdi_ci_low":      _r4(_csdi_ci_l) if _csdi_ci_l is not None else "",
-            "csdi_ci_high":     _r4(_csdi_ci_h) if _csdi_ci_h is not None else "",
-            # Кластер
-            "dominant_cluster": ca.get("dominant_cluster", ""),
-            "cluster_c0_prob":  _r4(probs.get(0)) if probs.get(0) is not None else "",
-            "cluster_c1_prob":  _r4(probs.get(1)) if probs.get(1) is not None else "",
-            "cluster_c2_prob":  _r4(probs.get(2)) if probs.get(2) is not None else "",
-            # Риски
-            "ohss_moderate":    _r4(ohss.get("p_moderate_ohss", 0)),
-            "ohss_severe":      _r4(ohss.get("p_severe_ohss", 0)),
-            "ohss_any":         _r4(ohss.get("p_any_ohss", 0)),
-            "p_no_blast":       _r4(empty.get("p_no_blast", 0)),
-            "p_no_good_blast":  _r4(empty.get("p_no_good_blast", 0)),
-            # Банкинг
-            "banking_p_per_mii":        _r4(_p_mii),
-            "banking_expected_euploid": _r4(_exp_eu),
-            # Исход — заполняется позже
-            "real_outcome":  "",
-            "outcome_date":  "",
-            "notes":         "",
-        }
-
-        write_header = not _ANALYTICS_CSV.exists()
-        with open(_ANALYTICS_CSV, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=_ANALYTICS_COLUMNS)
-            if write_header:
-                writer.writeheader()
-            writer.writerow(row)
-
-        return row["record_id"]
-
+        from ivf_core import save_analytics_record
+        p = result["patient"]
+        record_id = save_analytics_record(
+            result=result, age=p["age"], amh=p["amh"], afc=p["afc"], bmi=p["bmi"],
+            attempt=p["attempt"], sperm_source=p["sperm_source"],
+            follicles=p["follicles"], clinic_name=clinic_name or "",
+            patient_name=patient_name or "", patient_id=patient_id or "",
+            analytics_csv=str(_ANALYTICS_CSV),
+        )
+        if record_id is None:
+            raise RuntimeError("save_analytics_record failed")
+        return record_id
     except Exception as _analytics_exc:
         # Аналитика никогда не блокирует основную работу приложения
         try:
@@ -2862,20 +2703,10 @@ with st.expander("Сформировать PDF-отчёт для пациент�
 
                 # ── DT Analytics: пишем строку только вместе с PDF ──────
                 _analytics_record_id = _save_analytics(
-                    res          = res,
-                    _eb          = _eb,
-                    age          = float(age),
-                    amh          = float(amh),
-                    afc          = int(afc),
-                    bmi          = float(bmi),
-                    attempt      = int(attempt),
-                    sperm_source = sperm_source,
-                    follicles    = follicles,
-                    known        = known,
+                    _dt71,
                     clinic_name  = st.session_state.get("ivf_clinic_name", ""),
                     patient_name = pdf_patient_name or "",
                     patient_id   = pdf_patient_id   or "",
-                    csdi_result  = _ss.get("csdi_result"),
                 )
                 if _analytics_record_id:
                     st.caption(f"Аналитика сохранена · ID записи: `{_analytics_record_id}`")

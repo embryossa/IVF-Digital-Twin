@@ -524,6 +524,10 @@ _ANALYTICS_COLUMNS = [
     # реальные данные из выгрузки (для сравнения)
     "real_pn2", "real_cleav", "real_bl", "real_goodbl", "real_cryo",
     "real_outcome", "outcome_date", "notes",
+    # 7.1: KAT as it enters L7 — mean over scenarios with a transfer, blank
+    # without KAT weights (same columns as the 7.1 desktop history export).
+    # p_kat_raw above keeps its 7.0 definition for comparability.
+    "kat_transfer_mean", "kat_transfer_ci_low", "kat_transfer_ci_high",
 ]
 
 
@@ -566,6 +570,9 @@ def save_analytics_record(
         _nn        = res.get("nn_prediction", {})
         _nvsa      = res.get("nn_nvsa", {})
         _nn_info   = result.get("nn_info", {})
+        _nn_tx     = ((result.get("res_transfer") or {}).get("nn_prediction") or {}
+                      if result.get("nn_available") else {})
+        _ci_tx     = _nn_tx.get("base_prob_ci") or (None, None)
 
         probs   = ca.get("cluster_probs", {})
         ci_kat  = _nn.get("base_prob_ci",  (None, None))
@@ -683,6 +690,9 @@ def save_analytics_record(
             "real_outcome":   real_outcome or "",
             "outcome_date":   "",
             "notes":          notes or "",
+            "kat_transfer_mean":    _r4(_nn_tx.get("base_prob_mean")) if _nn_tx.get("base_prob_mean") is not None else "",
+            "kat_transfer_ci_low":  _r4(_ci_tx[0]) if _ci_tx[0] is not None else "",
+            "kat_transfer_ci_high": _r4(_ci_tx[1]) if _ci_tx[1] is not None else "",
         }
 
         # Куда пишем

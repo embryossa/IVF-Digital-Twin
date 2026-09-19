@@ -53,6 +53,14 @@ change** — see below.
   PDF, BEFE tab and analytics row read the same result.
 - Headline contract (`presentation.py`): per-transfer probability, or 0 for
   the current cycle when the entered results exclude a transfer.
+- `dt_predictions.csv`: new columns `kat_transfer_mean`, `kat_transfer_ci_low`,
+  `kat_transfer_ci_high` — KAT as it enters L7 (scenarios with a transfer, blank
+  without weights), as in the 7.1 desktop history export; `p_kat_raw` keeps its
+  7.0 definition. `app.py` now writes analytics through
+  `ivf_core.save_analytics_record`, so the app and the batch scripts share one
+  80-column schema and a file with an older header is archived instead of
+  being appended to with shifted columns. Row values come from the computed
+  case, not from sidebar fields edited afterwards.
 - `app.py` and `scripts/batch_predict.py` import the pipeline as a module
   instead of `exec` into globals (CSDI used to overwrite core names).
 - Labels: the L7 range is shown as "model uncertainty range"; banking and PDF

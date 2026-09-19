@@ -64,6 +64,34 @@ def test_closed_cycle_headline_zero_and_prospective_anchor(open_cycle):
     assert value == pytest.approx(open_cycle["cycle_probability"])
 
 
+def test_analytics_row_carries_l7_kat(open_cycle, tmp_path):
+    import csv
+    from ivf_core import save_analytics_record, _ANALYTICS_COLUMNS
+
+    path = tmp_path / "dt_predictions.csv"
+    # A file written with an older schema is archived, not appended to.
+    path.write_text("record_id,p_kat_raw\nold,0.5\n", encoding="utf-8")
+    p = open_cycle["patient"]
+    rid = save_analytics_record(
+        result=open_cycle, age=p["age"], amh=p["amh"], afc=p["afc"], bmi=p["bmi"],
+        attempt=p["attempt"], sperm_source=p["sperm_source"], follicles=p["follicles"],
+        analytics_csv=str(path))
+    assert rid is not None
+    assert len(list(tmp_path.glob("dt_predictions_schema_v2_*.csv"))) == 1
+    with open(path, encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert list(rows[0].keys()) == _ANALYTICS_COLUMNS
+    row = rows[0]
+    kat = open_cycle["p_kat_raw"]   # the KAT value that enters L7
+    if kat is None:
+        assert row["kat_transfer_mean"] == ""
+    else:
+        assert float(row["kat_transfer_mean"]) == pytest.approx(kat, abs=1e-4)
+    # p_kat_raw keeps the 7.0 definition: nn_prediction over all scenarios.
+    full = open_cycle["res"]["nn_prediction"]["base_prob_mean"]
+    assert float(row["p_kat_raw"]) == pytest.approx(full, abs=1e-4)
+
+
 def test_reliability_band_thresholds():
     assert dt_bridge.reliability_band(80, 70, 45) == "High"
     assert dt_bridge.reliability_band(50, 70, 45) == "Moderate"
