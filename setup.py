@@ -11,7 +11,7 @@ with open("requirements.txt") as f:
 
 setup(
     name="ivf_digital_twin",
-    version="6.2.0",
+    version="7.1.0",
     author="Sergei Sergeev",
     author_email="embryossa@gmail.com",
     description="An Integrated Multi-Source Ensemble Platform for Stage-Stratified IVF Outcome Prediction",

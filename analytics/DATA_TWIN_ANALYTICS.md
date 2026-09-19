@@ -3,6 +3,23 @@
 > **Repository module:** `Data_Twin_analytics.ipynb`
 > **Purpose:** Systematic, multi-layer validation of the IVF Digital Twin (DT) predictive pipeline against real clinical cycle outcomes.
 
+> [!IMPORTANT]
+> **Column meaning in 7.1.** Rows produced by 7.1 are not directly comparable
+> with 7.0 rows; analyse the two versions separately.
+>
+> | Column | 7.1 meaning |
+> |---|---|
+> | `p_per_transfer` | L1–L2 per-transfer probability, mean over all Monte Carlo scenarios (including those with no embryo to transfer) |
+> | `p_overall_cycle` | L1–L4 mechanistic cycle probability; **not** the cycle probability shown in the app, which is anchored to L7 |
+> | `p_kat_raw` | Unchanged 7.0 definition: `nn_prediction` mean over **all** scenarios — KAT when its weights are loaded, otherwise the FORTUNE+KPI proxy. The KAT value that enters L7 (mean over scenarios with a transfer, none without weights) is not this column |
+> | `p_csdi` | Filled whenever CSDI ran; whether it entered L7 depends on its applicability check |
+> | `bayes_mean` | L3 Beta-Binomial posterior with the clinic batches; does not enter L7 |
+> | `DIGITAL TWIN` | L7 (BEFE) probability of clinical pregnancy **per transfer**; `p_overall_cycle` only as a fallback when L7 is unavailable |
+>
+> The outcome is clinical pregnancy confirmed by ultrasound (ectopic counts as
+> positive), not live birth. Compare per-transfer predictions with per-transfer
+> outcomes.
+
 ---
 
 ## Table of Contents
@@ -125,7 +142,7 @@ Patient inputs (Age, AFC, AMH, ...)
 │  med_pn2, med_blasts,        │    for each embryological stage
 │  med_good                    │
 └──────────────┬──────────────┘
-               │  p_per_transfer  (MC median pregnancy probability)
+               │  p_per_transfer  (MC mean pregnancy probability)
                ▼
 ┌─────────────────────────────┐
 │  Bayesian Layer             │  → bayes_mean (Bayesian-adjusted probability)
@@ -133,9 +150,9 @@ Patient inputs (Age, AFC, AMH, ...)
                │
                ▼
 ┌─────────────────────────────┐
-│  KAT Model                  │  → p_kat_raw + ci_kat_low/high
-│  (simulated transfer model) │     Estimates implantation from
-│                             │     embryo quality & patient profile
+│  KAT Model (L3)             │  → p_kat_raw + ci_kat_low/high
+│  (KAN + FT-Transformer)     │     Mean over all scenarios;
+│                             │     FORTUNE+KPI proxy w/o weights
 └──────────────┬──────────────┘
                │
         ┌──────┴──────┐
@@ -147,7 +164,7 @@ Patient inputs (Age, AFC, AMH, ...)
                │
                ▼
 ┌─────────────────────────────┐
-│  DIGITAL TWIN (final score) │  → Ensemble / final clinical output
+│  DIGITAL TWIN (L7 BEFE)     │  → per-transfer clinical output
 └─────────────────────────────┘
 
 External reference:
@@ -275,12 +292,12 @@ In addition to the SD band, Cell B also shows a **dotted ±30% corridor** (lines
 
 | Model | Column | Description |
 |---|---|---|
-| MC | `p_per_transfer` | Raw Monte Carlo simulation probability of pregnancy per transfer |
+| MC | `p_per_transfer` | L1–L2 Monte Carlo probability of pregnancy per transfer (mean over all scenarios) |
 | Bayes | `bayes_mean` | Bayesian-adjusted probability |
-| KAT | `p_kat_raw` | Simulated transfer model based on embryo quality |
+| KAT | `p_kat_raw` | KAN + FT-Transformer ensemble (L3), mean over all scenarios; FORTUNE+KPI proxy without weights |
 | NVSA | `p_nvsa` | NVSA sub-model output |
 | CSDI | `p_csdi` | CSDI sub-model output |
-| DT | `DIGITAL TWIN` | Final ensemble score shown in the DT interface |
+| DT | `DIGITAL TWIN` | L7 (BEFE) per-transfer probability shown in the DT interface |
 | PRAI | `PRAI` | External full-cycle real-world reference score (from OPU table) |
 
 Each box shows median, IQR, whiskers, mean (dot), and standard deviation. Individual patient values are overlaid as scatter points.

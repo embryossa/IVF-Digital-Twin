@@ -58,6 +58,16 @@ change** — see below.
 - Labels: the L7 range is shown as "model uncertainty range"; banking and PDF
   tables follow the 7.1 Esteves output.
 
+### Changed — documentation
+- README, `docs/architecture.md`, `docs/coefficients.md`,
+  `docs/TRP_clinical_description.md`, `docs/CLINIC_CALIBRATION_GUIDE.md`,
+  `docs/CLINIC_DATA_SCHEMA.md`, `models/README.md`, the GAT and CSDI method
+  descriptions, `README_dt_batch.md`, `analytics/DATA_TWIN_ANALYTICS.md` and
+  `SECURITY.md` describe 7.1. The calibration guide no longer instructs patching
+  `app.py` with clinic temperatures; `README_dt_batch.md` describes
+  `batch_analysis.py` (the former `dt_batch.py` does not exist). Launcher
+  banners, `setup.py` and `CITATION.cff` say 7.1.
+
 ### Added
 - `src/embryology.py` (shared L1 parameters and exact conditioning),
   `src/modelio.py` (one model loader), `src/local_network.py` (Ollama host

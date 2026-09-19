@@ -292,7 +292,7 @@ def main():
     analytics_csv = os.path.join(_HERE, "dt_analytics_data", "dt_predictions.csv")
 
     print(f"\n{'='*60}")
-    print(f"  IVF Digital Twin v6.2 -- Batch + Postprocess")
+    print(f"  IVF Digital Twin v7.1 -- Batch + Postprocess")
     print(f"  Input : {args.input}")
     print(f"  Clinic: {args.clinic or '(not set)'}")
     print(f"{'='*60}\n")

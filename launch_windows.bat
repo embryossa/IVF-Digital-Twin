@@ -1,10 +1,10 @@
 @echo off
-title IVF Digital Twin v6.2
+title IVF Digital Twin v7.1
 color 0A
 
 echo.
 echo  =============================================
-echo   IVF DIGITAL TWIN v6.2
+echo   IVF DIGITAL TWIN v7.1
 echo   Sergeev et al., 2025
 echo  =============================================
 echo.

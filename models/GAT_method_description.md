@@ -103,8 +103,31 @@ The value of the GAT layer therefore lies not in replacing existing prediction a
 
 The GAT Graph Transformer constitutes Layer 6 (L6) of the IVF Digital Twin pipeline. It operates downstream of the KAT neural ensemble (L3) and receives the KAT probability score as one of its node features — not as a structural input to the graph, but as a node-level attribute that the attention mechanism can weight alongside clinical parameters. This positioning means the graph model has access to the KAT ensemble's learned summary of the patient while remaining free to form its own structural judgement about similarity and neighbourhood outcomes.
 
-Together, the six layers of IVF Digital Twin provide a multi-perspective, multi-methodology assessment of IVF outcome probability — Monte Carlo stochastic simulation, ensemble pregnancy scoring, neural network prediction, cluster-based profiling, diffusion-based laboratory forecasting, and patient similarity graph analysis — each contributing an independent signal, and each capable of flagging cases where the consensus is strong or where uncertainty warrants closer clinical attention.
+Together, the six layers of IVF Digital Twin provide a multi-perspective, multi-methodology assessment of IVF outcome probability — Monte Carlo stochastic simulation, ensemble pregnancy scoring, neural network prediction, cluster-based profiling, diffusion-based laboratory forecasting, and patient similarity graph analysis — each contributing an independent signal, and each capable of flagging cases where the consensus is strong or where uncertainty warrants closer clinical attention. Layer 7 (BEFE) fuses them: the GAT probability enters as evidence, and its trust is set by the effective number of neighbours (N_eff), attention entropy and neighbour outcome variance.
 
 ---
 
-*IVF Digital Twin v6.2 · Sergeev et al., 2025 · Research prototype — not for standalone clinical use*
+## Changes in version 7.1
+
+The trained model and the 1,172-protocol graph are unchanged. What changed is how a new patient is presented to it.
+
+**Feature contract.** Features are now built with the definitions of the training data, checked row by row against the training cohort:
+
+| Feature | 7.0 | 7.1 (training definition) |
+|---|---|---|
+| `afc` | antral follicle count | follicles at puncture — entered value, else round(OCC / 0.846) |
+| `transferred` | median warmed embryos | 1 (prediction for one transfer, as for KAT) |
+| `frozen` | Bl − transferred | max(Good Bl − 1, 0) |
+| `emb_d5` | Bl | round((Bl + 2PN) / 2) |
+| `good_blast_rate` | Good Bl / Bl | Good Bl / 2PN |
+| `KPIScore` | taken from the pipeline if present | follicle-based formula of the training data |
+
+An entered count of 0 is now used as 0; previously it was replaced by the simulated median.
+
+**Profile.** Counts come from the Monte Carlo scenarios in which a transfer is possible (the transfer view), because the final probability is per transfer.
+
+**Graph.** Neighbours are the exact top-k by cosine similarity, computed in float64 with a deterministic order for ties, so identical profiles get identical graphs regardless of batch. Training neighbourhoods are cached and each new patient is linked only to the training nodes, never to other queries.
+
+---
+
+*IVF Digital Twin v7.1 · Sergeev et al., 2026 · Research prototype — not for standalone clinical use*

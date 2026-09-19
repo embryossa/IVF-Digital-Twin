@@ -1,5 +1,5 @@
 @echo off
-title IVF Digital Twin v6.2
+title IVF Digital Twin v7.1
 cd /d "%~dp0"
 if not exist ".venv\Scripts\python.exe" (
     echo ERROR: Run INSTALL.bat first

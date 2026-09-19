@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 # Commercial use requires a separate license: see COMMERCIAL-LICENSE.md
 """
-IVF Digital Twin v6.2 -- Batch Analysis
+IVF Digital Twin v7.1 -- Batch Analysis
 =========================================================
 Запуск:
     python batch_analysis.py <input.xlsx> [output_dir] [--clinic "Название клиники"]
@@ -16,7 +16,7 @@ IVF Digital Twin v6.2 -- Batch Analysis
 Что делает:
     1. Читает Excel-выгрузку клиники (формат «отчет.xlsx»).
     2. Для каждой пациентки запускает predict_single_patient() из src/ivf_core.py
-       — полный L1-L6: ZINB-воронка, FORTUNE+KPI, KAT-нейросеть (если веса есть),
+       — полный L1-L6: NB/бета-биномиальная воронка, FORTUNE+KPI, KAT-нейросеть (если веса есть),
        байес-posterior, кластер L4, CSDI Hybrid v3 (L5), GNN L6.
     3. Дописывает строки в dt_analytics_data/dt_predictions.csv (схема app.py + GNN).
     4. Создаёт OPU_table_filled.xlsx (шаблон OPU_table с прогнозом DT).
@@ -451,7 +451,7 @@ def main():
     analytics_csv = str(Path(_BASE_DIR) / "dt_analytics_data" / "dt_predictions.csv")
 
     print(f"\n{'='*60}")
-    print(f" IVF Digital Twin v6.2 -- Batch Analysis")
+    print(f" IVF Digital Twin v7.1 -- Batch Analysis")
     print(f" Input:   {args.input}")
     print(f" Clinic:  {args.clinic or '(not specified)'}")
     print(f"{'='*60}\n")

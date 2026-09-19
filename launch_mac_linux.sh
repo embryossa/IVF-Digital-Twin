@@ -1,9 +1,9 @@
 #!/bin/bash
-# IVF Digital Twin v6.2 — launcher for Mac/Linux
+# IVF Digital Twin v7.1 — launcher for Mac/Linux
 
 echo ""
 echo "============================================="
-echo "  IVF DIGITAL TWIN v6.2"
+echo "  IVF DIGITAL TWIN v7.1"
 echo "  Sergeev et al."
 echo "============================================="
 echo ""

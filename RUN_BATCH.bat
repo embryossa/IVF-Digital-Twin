@@ -14,7 +14,7 @@ if not defined DT_KEEP_CODEPAGE chcp 1251 > nul
 
 echo.
 echo  =====================================================
-echo   IVF Digital Twin v6.2 -- Batch + Postprocess
+echo   IVF Digital Twin v7.1 -- Batch + Postprocess
 echo  =====================================================
 echo.
 

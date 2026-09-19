@@ -32,8 +32,10 @@ than a list of hardening flags.
 - The narrative layer (`llm_consultant.py`, `guideline_rag.py`) talks to a
   **local Ollama instance** at `127.0.0.1:11434`. No patient data is sent to
   any cloud LLM provider, and there are no third-party API keys anywhere in
-  this codebase. If you repoint `OLLAMA_HOST` at a remote or hosted endpoint,
-  that guarantee is yours to re-establish.
+  this codebase. Since 7.1 the narrative layer refuses an `OLLAMA_HOST` that is
+  not a loopback address (`src/local_network.py`) and ignores system proxy
+  settings for these requests, so patient context cannot be sent to a remote
+  endpoint by configuration.
 
 ### Model files are trusted input
 

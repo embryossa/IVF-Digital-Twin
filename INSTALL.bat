@@ -1,11 +1,11 @@
 @echo off
-title IVF Digital Twin v6.2 - Install
+title IVF Digital Twin v7.1 - Install
 color 0A
 cd /d "%~dp0"
 
 echo.
 echo  ================================================
-echo   IVF Digital Twin v6.2 - Installation
+echo   IVF Digital Twin v7.1 - Installation
 echo  ================================================
 echo.
 echo  Internet connection required (first time only).
@@ -162,7 +162,7 @@ echo.
 echo [9/9] Creating launcher...
 (
 echo @echo off
-echo title IVF Digital Twin v6.2
+echo title IVF Digital Twin v7.1
 echo cd /d "%%~dp0"
 echo if not exist ".venv\Scripts\python.exe" ^(
 echo     echo ERROR: Run INSTALL.bat first

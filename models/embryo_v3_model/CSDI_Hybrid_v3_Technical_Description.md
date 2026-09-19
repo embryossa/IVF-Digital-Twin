@@ -6,6 +6,13 @@
 **Version:** 3.0  
 **Authors:** Sergeev et al., 2025  
 
+> **IVF Digital Twin 7.1.** The trained model is unchanged; sections 1–9 are the
+> training and validation report. Inference changed in 7.1: the P(pregnancy)
+> interval is the spread of per-sample predictions (the Wilson interval is
+> gone), generated blastocyst counts are capped at 2PN, no sampling is done for
+> 2PN = 0, and CSDI enters the L7 fusion only inside its training domain. See
+> [Changes in 7.1](#changes-in-71) in section 10.
+
 ---
 
 ## Table of Contents
@@ -98,7 +105,7 @@ The CSDI Hybrid v3 resolves both problems through a clean separation of concerns
 │  │  LightGBM: DART boosting, is_unbalance=True                  │   │
 │  │  Platt scaling: LogisticRegression on calibration holdout     │   │
 │  │       ↓                                                      │   │
-│  │  P(pregnancy) — calibrated scalar with Wilson CI             │   │
+│  │  P(pregnancy) — calibrated scalar + per-sample 95% interval  │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                             ↓                                       │
 │  ┌──────────────────────────────────────────────────────────────┐   │
@@ -444,13 +451,18 @@ Rate variables (blast_rate, good_rate) are derived analytically from the generat
 ```python
 result = {
     'P_pregnancy':          float,         # Calibrated P(clinical pregnancy) from LightGBM + Platt
-    'CI_95':                (float, float), # Wilson 95% confidence interval on P
+    'CI_95':                (float, float), # 7.1: 2.5–97.5% quantiles of per-sample P (was Wilson)
+    'interval_kind':        str,           # 'mc-prediction-quantiles'
+    'pregnancy_probabilities': np.ndarray, # 7.1: P for each generated sample
+    'P_pregnancy_mean':     float,         # 7.1: mean of the per-sample P
+    'conditioning':         dict,          # 7.1: the 7 conditioning values used
+    'PI_95_counts':         dict,          # 7.1: 2.5–97.5% quantiles of generated counts
     'blast_total_median':   float,         # Median Число Bl across generated samples
     'good_blast_median':    float,         # Median Число Bl хор.кач-ва across generated samples
     'blast_rate_median':    float,         # Median blast_rate across generated samples
     'good_rate_median':     float,         # Median good_rate (TGBDR) across generated samples
-    'PI_90_counts':         dict,          # {feature: (lo, hi)} — 90% conformal PI, lo ≥ 0
-    'PI_50_counts':         dict,          # {feature: (lo, hi)} — 50% conformal PI, lo ≥ 0
+    'PI_90_counts':         dict,          # {feature: (lo, hi)} — 90% conformal PI, clipped to [0, 2PN]
+    'PI_50_counts':         dict,          # {feature: (lo, hi)} — 50% conformal PI, clipped to [0, 2PN]
     'samples':              pd.DataFrame,  # [n_samples × 4] — all generated samples
 }
 ```
@@ -544,12 +556,14 @@ result = model.mc_sample(patient, n_samples=2000)
 
 1. `cond_arr = normalizer.transform_cond(patient_features)`  — quantile-normalize 7 conditioning features
 2. `raw = diffusion.ddim_sample(denoiser, cond_arr, n_samples=2000, ddim_steps=50)` — generate 2000 samples of (Bl_normalized, good_Bl_normalized)
-3. `counts = post_process_counts(normalizer.inverse_count(raw))` — inverse quantile transform + round + clip (good_Bl ≤ Bl)
+0. 7.1: 2PN must be a non-negative integer; for 2PN = 0 all generated counts are 0 and no sampling is done
+3. `counts = post_process_counts(normalizer.inverse_count(raw))` — inverse quantile transform + round + clip (good_Bl ≤ Bl); 7.1 also caps Bl at 2PN
 4. `pn2_arr = np.full(n_samples, patient["2 pN"])` — broadcast 2pN for rate derivation
 5. `rates = derive_rates(counts, pn2_arr)` — compute (blast_rate, good_rate) analytically
 6. `count_medians = np.median(counts, axis=0)` — summarize to scalar for classifier
 7. `p_preg = classifier.predict_proba(patient_features, count_medians)` — LGB + Platt → P
-8. `pi90, pi50 = conformal.get_intervals(count_medians, levels=[0.90, 0.50])` — add conformal radii
+8. `pi90, pi50 = conformal.get_intervals(count_medians, levels=[0.90, 0.50])` — add conformal radii (7.1: clipped to [0, 2PN])
+9. 7.1: the classifier is also applied to every generated sample in one call; the 2.5–97.5% quantiles of those probabilities are `CI_95`. They describe the spread of the prediction over generated embryology, not a confidence interval of the mean
 
 **Batch evaluation (for population-level validation):**
 
@@ -605,7 +619,10 @@ Optimal threshold: 0.343
 
 This threshold produces a balanced classifier with Sensitivity = 0.623, Specificity = 0.628. Note that the standard threshold of 0.50 produces poor sensitivity (0.155) at this prevalence — using the calibrated threshold of 0.343 is essential for clinical deployment.
 
-The threshold is stored in `config.json` and loaded automatically:
+The threshold is stored in `config.json` and loaded automatically. The shipped
+`config.json` holds `best_threshold = 0.3549` from the final fit; 0.343 is the
+value of the evaluation reported here. The application reads the threshold
+from the model, not from this document:
 ```python
 model = EmbryoHybridV3.load('embryo_v3_model')
 print(model.best_threshold)  # 0.343
@@ -742,21 +759,49 @@ TGBDR              (median): 20.4%
 
 ### Integration in the application
 
-In the Streamlit application (`app.py`), the CSDI module is accessed in the **"🧬 Diffusion" tab** (Tab 7). The conditioning inputs are constructed automatically from the MC simulation medians:
+CSDI runs inside `ivf_core.predict_single_patient` as part of every
+calculation; the **L5 Diffusion** tab of `app.py` shows that result. The
+conditioning is built from the Monte Carlo scenarios in which a transfer is
+possible (the transfer view), with the training definitions of each feature:
 
 ```python
-_patient_csdi = {
-    "Количество фолликулов":  follicles or afc,
-    "Число ОКК":              res['okk_med'],      # from MC pipeline
-    "Число инсеминированных": res['mii_med'],      # from MC pipeline
-    "2 pN":                   res['pn2_med'],      # from MC pipeline
-    "Частота получения ОКК":  okk_med / follicles,
-    "Частота оплодотворения": pn2_med / mii_med,
-    "KPIScore":               res['kpi_score_median'],  # from MC pipeline
+patient_csdi = {
+    "Количество фолликулов":  follicles if entered else round(OCC_med / 0.846),
+    "Число ОКК":              round(OCC_med),       # transfer-view medians
+    "Число инсеминированных": round(MII_med),
+    "2 pN":                   round(2PN_med),
+    "Частота получения ОКК":  OCC_med / follicles,
+    "Частота оплодотворения": 2PN_med / MII_med,
+    "KPIScore":               follicle-based training formula,
 }
 ```
 
-This design means no additional user input is required — the CSDI module uses the full patient context already computed by the MC pipeline.
+### Changes in 7.1
+
+**Applicability.** Before CSDI enters the L7 fusion,
+`befe_batch_utils.assess_csdi` checks the conditioning against the training
+cohort (Mahalanobis distance on log1p follicles, OCC, MII, 2PN and KPIScore,
+fitted threshold in `models/csdi_ood_stats.npz`):
+
+| Situation | CSDI result | Enters L7 |
+|---|---|---|
+| 2PN = 0 | not computed (`no_2pn`) | no |
+| Model files missing | not computed (`model_unavailable`) | no |
+| `csdi_ood_stats.npz` missing | computed and shown (`unchecked`) | no |
+| Outside the training domain | computed and shown (`outside_training`) | no |
+| Inside the training domain | computed and shown | yes |
+
+The rule fails closed: without the applicability statistics CSDI is never
+shown to lie inside its training data, so it does not enter the fusion. A
+result that is not a finite probability is discarded (`inference_failed`).
+
+**Role in L7.** CSDI checks the consistency of the embryology forecast; it
+affects the prior precision and the diffusion component of reliability. It is
+not a third independent vote on pregnancy alongside KAT and GAT.
+
+**Interval.** The former Wilson interval treated one probability as if it had
+been estimated from 1,000 Bernoulli observations and was therefore
+artificially narrow. `CI_95` is now the spread of per-sample predictions.
 
 ---
 
@@ -831,7 +876,7 @@ All components are saved as raw arrays (numpy) or PyTorch tensors, never as Pyth
 from embryo_csdi_v3 import EmbryoHybridV3
 
 model = EmbryoHybridV3.load('models/embryo_v3_model')
-# → prints: [LOAD] models/embryo_v3_model/  (threshold=0.343)
+# → prints the load message with the threshold from config.json (0.355 in the shipped file)
 
 result = model.mc_sample(patient_dict, n_samples=2000)
 p_pregnancy  = result['P_pregnancy']      # float
@@ -844,5 +889,5 @@ df_samples   = result['samples']          # pd.DataFrame with 2000 rows × 4 col
 ---
 
 *CSDI Hybrid v3 — Technical Description*  
-*Sergeev et al., 2025 · IVF Digital Twin · embryossa@gmail.com*  
+*Sergeev et al., 2025 · IVF Digital Twin 7.1 · embryossa@gmail.com*  
 *Module version 3.0 · Dataset: 15,193 IVF cycles*
