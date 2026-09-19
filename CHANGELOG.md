@@ -23,7 +23,10 @@ change** — see below.
   cumulative probabilities no longer assume independent transfers.
 - **KAT:** isotonic calibration steps are interpolated (no plateaus or jumps);
   model inputs follow the training definitions (follicles at puncture,
-  day-5 embryos, frozen embryos).
+  day-5 embryos, frozen embryos). FT-Transformer encoding keeps the fitted
+  PLE thresholds (`src/mambular_ple_fix.py`, as in the clinic build's
+  mambular): with the pip package the output of one patient depended on the
+  other Monte Carlo rows, and KAT differed from the clinic build by 6–7 pp.
 - **CSDI (L5):** runs on the transfer profile with the training KPIScore,
   enters fusion only inside its training domain (fail-closed without
   `models/csdi_ood_stats.npz`); the fabricated Wilson interval is replaced by
@@ -58,7 +61,8 @@ change** — see below.
 ### Added
 - `src/embryology.py` (shared L1 parameters and exact conditioning),
   `src/modelio.py` (one model loader), `src/local_network.py` (Ollama host
-  must be loopback), `tests/test_bridge.py`.
+  must be loopback), `src/mambular_ple_fix.py`, `tests/test_bridge.py`,
+  `tests/test_mambular_ple_fix.py`.
 
 ## [7.0.1] — 2026-07-30
 

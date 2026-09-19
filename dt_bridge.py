@@ -22,9 +22,17 @@ calibration of the clinic build is not part of this repository.
 """
 import os
 
+import sys
+
 import numpy as np
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if os.path.join(_BASE_DIR, 'src') not in sys.path:
+    sys.path.insert(0, os.path.join(_BASE_DIR, 'src'))
+
+# FT-Transformer feature encoding exactly as in the 7.1 clinic build.
+import mambular_ple_fix  # noqa: E402
+mambular_ple_fix.apply()
 
 # Results of the current cycle; a plan of new cycles must not inherit them.
 CYCLE_OBSERVATIONS = ('known_okk', 'known_mii', 'known_pn2', 'known_blasts',

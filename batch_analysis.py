@@ -65,6 +65,8 @@ from ivf_core import (  # noqa: E402
     _BASE_DIR,
 )
 from befe_batch_utils import compute_l7_posterior  # noqa: E402
+import mambular_ple_fix  # noqa: E402  (FT-Transformer encoding as in the 7.1 clinic build)
+mambular_ple_fix.apply()
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  КОНФИГУРАЦИЯ — меняйте под клинику

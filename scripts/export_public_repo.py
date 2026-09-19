@@ -44,6 +44,7 @@ INCLUDE = [
     "src/embryology.py",
     "src/modelio.py",
     "src/local_network.py",
+    "src/mambular_ple_fix.py",
     # 7.1 data flow for app.py and the clinical headline contract
     "dt_bridge.py",
     "presentation.py",

@@ -30,6 +30,8 @@ import numpy as np
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+import mambular_ple_fix  # noqa: E402  (FT-Transformer encoding as in the 7.1 clinic build)
+mambular_ple_fix.apply()
 import ivf_digital_twin as _pipeline  # noqa: E402
 globals().update({k: getattr(_pipeline, k) for k in dir(_pipeline) if not k.startswith("__")})
 

@@ -28,6 +28,8 @@ sys.path.insert(0, _SRC_DIR)
 sys.path.insert(0, _HERE)
 
 from befe_batch_utils import compute_l7_posterior
+import mambular_ple_fix  # noqa: E402  (FT-Transformer encoding as in the 7.1 clinic build)
+mambular_ple_fix.apply()
 
 # ── Column names in the predictions file ──────────────────────────────────────
 COL_ID       = "Номер карты пациента"
