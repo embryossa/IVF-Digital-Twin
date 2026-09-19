@@ -83,7 +83,7 @@ class TRPInput:
     amh:            float          # current AMH (ng/mL)
     afc:            int            # current AFC
     bmi:            float  = 24.0
-    sperm_source:   str    = "ejaculate"   # "ejaculate" | "donor" | "surgical"
+    sperm_source:   str    = "ejaculate"   # Esteves stratum; see resolve_sperm_source()
 
     # ── past attempts (already completed) ─────────────────
     past_cycles:    List[PastCycle] = field(default_factory=list)
@@ -141,7 +141,7 @@ class TRPResult:
     expected_cycles_to_success: float
 
     # ── trajectory fan (for visualization) ─────────────────
-    fan_success_times:  np.ndarray  # cycle index of success, NaN if none
+    fan_success_probability: np.ndarray  # per trajectory: P(>=1 success within its window)
     fan_window_sizes:   np.ndarray  # available cycles within patient horizon
     fan_window_years:   np.ndarray  # biological window in years per trajectory
     amh_trajectories:   np.ndarray  # shape (n_traj_sample, n_steps) for plot
@@ -186,20 +186,19 @@ def _selection_decay(p_base: float, attempt: int, alpha: float = 0.08) -> float:
     ~8% relative decline per attempt in the mid-probability range.
     """
     if attempt <= 1 or p_base <= 0 or p_base >= 1:
-        return float(np.clip(p_base, 0.01, 0.99))
+        return float(np.clip(p_base, 0.0, 1.0))
     logit = math.log(p_base / (1.0 - p_base))
     return float(_sigmoid(logit - alpha * (attempt - 1)))
 
 
 def _p_cycle(age: float, amh: float, bmi: float, attempt: int,
-             p_oracle_fn: Optional[Callable]) -> float:
+             p_oracle_fn: Optional[Callable], afc: int = 0) -> float:
     """Single per-cycle probability via oracle or FORTUNE."""
     if p_oracle_fn is not None:
-        try:
-            p = float(p_oracle_fn(age, amh, 0, bmi, attempt))
-            return float(np.clip(p, 0.01, 0.97))
-        except Exception:
-            pass
+        p = float(p_oracle_fn(age, amh, afc, bmi, attempt))
+        if not math.isfinite(p) or not 0 <= p <= 1:
+            raise ValueError('Invalid external TRP probability')
+        return p
     p = _fortune_p_transfer(age, amh, bmi)
     return _selection_decay(p, attempt)
 
@@ -226,10 +225,12 @@ def _p_cycle_calibrated(age_now: float, amh_now: float, bmi: float,
     (p_overall_cycle) while correctly modelling how the probability
     changes as the patient ages and AMH declines.
     """
-    if step == 0:
-        return float(np.clip(p_base, 0.01, 0.97))
+    if not math.isfinite(p_base) or not 0 <= p_base <= 1:
+        raise ValueError('Invalid TRP anchor probability')
+    if step == 0 or p_base in (0.0,1.0):
+        return float(p_base)
 
-    p_b = float(np.clip(p_base, 0.01, 0.99))
+    p_b = float(p_base)
     logit_base = math.log(p_b / (1.0 - p_b))
 
     # FORTUNE delta (relative change only, not absolute value)
@@ -340,12 +341,17 @@ def compute_trp(inp: TRPInput) -> TRPResult:
          a. Update age and AMH
          b. Check window-closure conditions
          c. Evaluate per-cycle success probability
-         d. Sample outcome ~ Bernoulli(p)
-         e. Stop on success or window closure
+         d. Accumulate the probability of no success so far
       3. Apply importance resampling if past_cycles provided
+
+    Outcomes are integrated out rather than drawn: cycle 1 of the cumulative
+    curve then equals the anchor probability exactly instead of approaching it
+    with Monte Carlo error, and only the AMH fan stays stochastic.
 
     Returns TRPResult with all metrics and plot data.
     """
+    if inp.desired_children != 1:
+        raise ValueError('TRP estimates time to the first pregnancy; child-count modelling is not implemented')
     rng = np.random.default_rng(inp.seed)
     N   = inp.n_trajectories
     M   = inp.max_future_cycles
@@ -364,7 +370,11 @@ def compute_trp(inp: TRPInput) -> TRPResult:
     # ── 4b. Compute response_ratio for conditioning ─────────
     n_past = len(inp.past_cycles)
     rr = _compute_response_ratio(inp.past_cycles, inp.bmi)
-    conditioning_used = rr is not None
+    # The old resampling weights were independent of decline rates and
+    # simulated success, so they reweighted Monte Carlo noise, not prognosis.
+    # Keep observed response as descriptive context until a fitted joint
+    # response/prognosis model is available.
+    conditioning_used = False
 
     # Expected OKK at current parameters (for resampling weight)
     log_mu_now = (1.925
@@ -378,13 +388,15 @@ def compute_trp(inp: TRPInput) -> TRPResult:
     # ── p_base: anchored probability for cycle 0 ───────────
     # Use KAT-calibrated p_overall_cycle if provided, else FORTUNE.
     _p_base = inp.p_base_override  # None → FORTUNE fallback
-    _use_calibrated = (_p_base is not None and 0.01 <= _p_base <= 0.99)
+    _use_calibrated = _p_base is not None
     if _use_calibrated:
-        _p_base = float(np.clip(_p_base, 0.01, 0.99))
+        if not math.isfinite(_p_base) or not 0 <= _p_base <= 1:
+            raise ValueError('Invalid TRP anchor probability')
+        _p_base=float(_p_base)
 
-    # ── 4c. Per-trajectory simulation ──────────────────────
+    # ── 4c. Per-trajectory probabilities ───────────────────
     # Arrays: each row = one trajectory
-    success_at  = np.full(N, np.nan)   # cycle index (1-based) of success
+    step_p = np.zeros((N, M))          # per-cycle probability; 0 beyond the window
     window_size       = np.zeros(N, dtype=int)   # cycles within patient horizon
     bio_window_years  = np.zeros(N, dtype=float) # biological window in years
     # AMH matrix for plot (sub-sample 200 trajectories)
@@ -403,7 +415,6 @@ def compute_trp(inp: TRPInput) -> TRPResult:
     for i in range(N):
         k_i    = k_samples[i]
         avail  = 0      # biological window: cycles available before closure
-        first_success_set = False
 
         # ── Pass 1: count biological window (ignore success/failure) ──
         for step in range(M):
@@ -427,9 +438,10 @@ def compute_trp(inp: TRPInput) -> TRPResult:
                 )
             else:
                 p = _p_cycle(age_now, amh_now, inp.bmi,
-                             attempt_abs, inp.p_oracle_fn)
+                             attempt_abs, inp.p_oracle_fn, inp.afc)
             if p < inp.p_min_per_cycle:
                 break
+            step_p[i, step] = p
             avail += 1
         window_size[i] = avail
 
@@ -437,8 +449,9 @@ def compute_trp(inp: TRPInput) -> TRPResult:
         # Independent of max_future_cycles — asks "when does the
         # biological window actually close?" for THIS trajectory.
         # Scanned at monthly resolution; stops at amh_min OR age_max.
-        _bio_win_yr = 30.0  # default: open beyond scan horizon
-        for _mo in range(1, 361):           # 1 month .. 30 years
+        initially_open=inp.amh >= inp.amh_min and inp.age < inp.age_max
+        _bio_win_yr = 30.0 if initially_open else 0.0
+        for _mo in (range(1,361) if initially_open else ()) :           # 1 month .. 30 years
             _t  = _mo / 12.0
             _an = _amh_at_t(inp.amh, k_i, _t)
             if _an < inp.amh_min:
@@ -449,33 +462,10 @@ def compute_trp(inp: TRPInput) -> TRPResult:
                 break
         bio_window_years[i] = _bio_win_yr
 
-        # ── Pass 2: simulate outcomes within the window ──────────────
-        for step in range(avail):
-            t_years = step * dt
-            age_now = inp.age + t_years
-            amh_now = _amh_at_t(inp.amh, k_i, t_years)
-            attempt_abs = n_past_total + step
-            if _use_calibrated:
-                p = _p_cycle_calibrated(
-                    age_now, amh_now, inp.bmi,
-                    step=step,
-                    p_base=_p_base,
-                    age_base=inp.age,
-                    amh_base=inp.amh,
-                )
-            else:
-                p = _p_cycle(age_now, amh_now, inp.bmi,
-                             attempt_abs, inp.p_oracle_fn)
-            outcome = rng.binomial(1, p)
-            if outcome == 1:
-                success_at[i] = step + 1   # 1-based cycle index
-                first_success_set = True
-                break
-
     # ── 4d. Importance resampling ───────────────────────────
     if conditioning_used:
         resample_idx = rng.choice(N, size=N, replace=True, p=weights)
-        success_at        = success_at[resample_idx]
+        step_p            = step_p[resample_idx]
         window_size       = window_size[resample_idx]
         bio_window_years  = bio_window_years[resample_idx]
 
@@ -485,24 +475,25 @@ def compute_trp(inp: TRPInput) -> TRPResult:
     p_cum_hi     = np.zeros(M)
     p_per_median = np.zeros(M)
 
-    for c in range(1, M + 1):
-        # Fraction of trajectories that succeeded by cycle c
-        success_by_c = np.nansum(success_at <= c) / N
-        p_cum[c - 1] = success_by_c
+    # P(no success through cycle c) per trajectory, then averaged: no coin flips,
+    # so cycle 1 is the anchor itself rather than a sample of it.
+    survival = np.cumprod(1.0 - step_p, axis=1)
+    cum_per_traj = 1.0 - survival
+    p_cum = cum_per_traj.mean(axis=0)
 
-        # Bootstrap CI (P10/P90) via 200 resamples
-        boot = rng.choice(N, size=(200, N), replace=True)
-        boot_p = np.array([
-            np.nansum(success_at[b] <= c) / N for b in boot
-        ])
-        p_cum_lo[c - 1] = float(np.percentile(boot_p, 10))
-        p_cum_hi[c - 1] = float(np.percentile(boot_p, 90))
+    # Bootstrap CI (P10/P90) over trajectories; the spread left is the AMH fan.
+    boot = rng.choice(N, size=(200, N), replace=True)
+    boot_p = np.array([cum_per_traj[b].mean(axis=0) for b in boot])
+    p_cum_lo = np.percentile(boot_p, 10, axis=0)
+    p_cum_hi = np.percentile(boot_p, 90, axis=0)
 
     # Per-cycle marginal p (median trajectory)
     for c in range(1, M + 1):
         t_years = (c - 1) * dt
         age_c   = inp.age + t_years
         amh_c   = _amh_at_t(inp.amh, k_median, t_years)
+        if age_c >= inp.age_max or amh_c < inp.amh_min:
+            break
         att_c   = n_past_total + (c - 1)
         if _use_calibrated:
             p_per_median[c - 1] = _p_cycle_calibrated(
@@ -514,10 +505,13 @@ def compute_trp(inp: TRPInput) -> TRPResult:
             )
         else:
             p_per_median[c - 1] = _p_cycle(age_c, amh_c, inp.bmi,
-                                            att_c, inp.p_oracle_fn)
+                                            att_c, inp.p_oracle_fn, inp.afc)
+        if p_per_median[c - 1] < inp.p_min_per_cycle:
+            p_per_median[c - 1] = 0.0
+            break
 
     # ── 4f. Window metrics ──────────────────────────────────
-    ws_valid = window_size[window_size > 0]
+    ws_valid = window_size
     if len(ws_valid) == 0:
         ws_valid = np.array([0])
     win_p10 = float(np.percentile(ws_valid, 10))
@@ -531,11 +525,15 @@ def compute_trp(inp: TRPInput) -> TRPResult:
     bw_p90 = float(np.percentile(bio_window_years, 90))
 
     # ── 4g. Summary scalars ─────────────────────────────────
-    p_success_total = float(np.nansum(~np.isnan(success_at)) / N)
-    p_window_first  = float(np.nansum(np.isnan(success_at)) / N)
+    success_probability = cum_per_traj[:, -1]
+    p_success_total = float(success_probability.mean())
+    # No success anywhere in a window that closed before the planning horizon.
+    p_window_first = float(np.mean((1.0 - success_probability) * (window_size < M)))
 
-    valid_success = success_at[~np.isnan(success_at)]
-    exp_cycles = float(np.mean(valid_success)) if len(valid_success) > 0 else np.nan
+    # First success at cycle c has probability survival_{c-1} * p_c.
+    first_success = np.concatenate([np.ones((N, 1)), survival[:, :-1]], axis=1) * step_p
+    mass = first_success.mean(axis=0)
+    exp_cycles = float((np.arange(1, M + 1) * mass).sum() / mass.sum()) if mass.sum() > 0 else np.nan
 
     return TRPResult(
         p_cum_by_cycle      = p_cum,
@@ -551,7 +549,7 @@ def compute_trp(inp: TRPInput) -> TRPResult:
         p_success_total     = p_success_total,
         p_window_closes_first = p_window_first,
         expected_cycles_to_success = exp_cycles,
-        fan_success_times   = success_at,
+        fan_success_probability = success_probability,
         fan_window_sizes    = window_size,
         fan_window_years    = bio_window_years,
         amh_trajectories    = amh_mat,

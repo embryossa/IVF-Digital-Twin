@@ -41,29 +41,14 @@ if _BASE_DIR not in sys.path:
 #  ПОДКЛЮЧЕНИЕ PIPELINE (ivf_digital_twin.py / .pyd)
 #  Повторяет логику app.py строки 302-328
 # ══════════════════════════════════════════════════════════════════════════════
-_src_py  = os.path.join(_SRC_DIR, "ivf_digital_twin.py")
-_src_pyd = any(
-    f.startswith("ivf_digital_twin") and f.endswith(".pyd")
-    for f in os.listdir(_SRC_DIR)
-) if os.path.isdir(_SRC_DIR) else False
-
-if _src_pyd:
-    import ivf_digital_twin as _ivf_mod
-    globals().update({k: getattr(_ivf_mod, k)
-                      for k in dir(_ivf_mod) if not k.startswith("__")})
-elif os.path.exists(_src_py):
-    _g = globals()
-    _orig_file = _g.get("__file__", "")
-    _g["__file__"] = _src_py
-    _pipeline_code = open(_src_py, encoding="utf-8").read()
-    _pipeline_code = _pipeline_code.replace("if __name__ ==", "if False and __name__ ==")
-    exec(compile(_pipeline_code, _src_py, "exec"), _g)
-    _g["__file__"] = _orig_file
-else:
-    raise RuntimeError(
-        "ivf_digital_twin не найден ни как .py, ни как .pyd в src/\n"
-        f"Ожидается: {_src_py}"
-    )
+# Import into an isolated module namespace: executing both models into globals
+# allowed the diffusion module to overwrite core constants and helper functions.
+import ivf_digital_twin as _pipeline
+PatientInput = _pipeline.PatientInput
+KnownValues = _pipeline.KnownValues
+run_pipeline_extended = _pipeline.run_pipeline_extended
+load_nn_ensemble = _pipeline.load_nn_ensemble
+torch = getattr(_pipeline, "torch", None)
 
 # ── Уже подключены: PatientInput, KnownValues, run_pipeline_extended,
 #    load_nn_ensemble, NN_MODEL_PATHS, NN_LIBS_AVAILABLE — из pipeline
@@ -76,45 +61,14 @@ else:
 _CSDI_CLASS_READY = False
 CSDI_LOAD_ERROR   = ""
 
-_csdi_pyd = any(
-    f.startswith("embryo_csdi_v3") and f.endswith(".pyd")
-    for f in os.listdir(_SRC_DIR)
-) if os.path.isdir(_SRC_DIR) else False
-
-_csdi_candidates = [
-    os.path.join(_SRC_DIR, "embryo_csdi_v3.py"),
-    os.path.join(_BASE_DIR, "embryo_csdi_v3.py"),
-]
-
-if _csdi_pyd:
-    try:
-        import embryo_csdi_v3 as _csdi_mod
-        globals().update({k: getattr(_csdi_mod, k)
-                          for k in dir(_csdi_mod) if not k.startswith("__")})
-        _CSDI_CLASS_READY = True
-    except Exception as _e:
-        CSDI_LOAD_ERROR = str(_e)
-else:
-    for _cf in _csdi_candidates:
-        if os.path.exists(_cf):
-            _g2 = globals()
-            _orig2 = _g2.get("__file__", "")
-            try:
-                _csdi_code = open(_cf, encoding="utf-8").read()
-                _csdi_code = _csdi_code.replace("if __name__ ==", "if False and __name__ ==")
-                _g2["__file__"] = _cf
-                exec(compile(_csdi_code, _cf, "exec"), _g2)
-                _CSDI_CLASS_READY = True
-            except Exception as _e:
-                CSDI_LOAD_ERROR = str(_e)
-            finally:
-                _g2["__file__"] = _orig2
-            break
+try:
+    from embryo_csdi_v3 import EmbryoHybridV3
+    _CSDI_CLASS_READY = True
+except Exception as _e:
+    CSDI_LOAD_ERROR = str(_e)
 
 _CSDI_MODEL_DIRS = [
     os.path.join(_BASE_DIR, "models", "embryo_v3_model"),
-    os.path.join(_BASE_DIR, "embryo_v3_model"),
-    "embryo_v3_model",
 ]
 
 # ── GNN ────────────────────────────────────────────────────────────────────
@@ -308,6 +262,48 @@ def _compute_esteves_banking(patient_age: float, sperm_src: str,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  ПРОГНОЗ НА ПЕРЕНОС: СЦЕНАРИИ, В КОТОРЫХ ЕСТЬ ЧТО ПЕРЕНОСИТЬ
+# ══════════════════════════════════════════════════════════════════════════════
+_PROFILE_STAGES = ('okk', 'mii', 'pn2', 'blasts', 'good', 'euploid', 'warmed')
+
+
+def transfer_view(res: dict, nn_available: bool) -> dict:
+    """Pipeline summaries restricted to Monte Carlo scenarios with a transfer.
+
+    The final probability is per transfer, so the L1 prior, KAT and the
+    count profile fed to GAT/CSDI/OOD describe only scenarios in which an
+    embryo is available (owner decision 2026-09-11). Scenarios without a
+    transfer enter the cycle probability and the risk panel instead.
+    Returns a shallow copy of res; with no such scenario the unconditional
+    summaries are kept and `transfer_conditional['n']` is 0.
+    """
+    mask = np.asarray(res['sim_n_tx']) >= 1
+    view = dict(res)
+    info = {'share': float(mask.mean()), 'n': int(mask.sum()), 'n_total': int(mask.size),
+            'scenario': res.get('transfer_scenario')}
+    view['transfer_conditional'] = info
+    if not mask.any():
+        return view
+    for key in _PROFILE_STAGES:
+        view['sim_' + key] = np.asarray(res['sim_' + key])[mask]
+        view[key + '_med'] = float(np.median(view['sim_' + key]))
+    for key in ('sim_p_combined', 'sim_kpi_scores', 'sim_n_tx', 'sim_n_tx_good', 'sim_n_tx_fair'):
+        if key in res:
+            view[key] = np.asarray(res[key])[mask]
+    view['p_per_transfer'] = float(np.mean(view['sim_p_combined']))
+    view['kpi_score_median'] = int(np.median(view['sim_kpi_scores']))
+    nn = dict(res.get('nn_prediction') or {})
+    if nn_available and 'sim_probs' in nn:
+        probs = np.asarray(nn['sim_probs'])[mask]
+        nn.update(sim_probs=probs, base_prob_mean=float(probs.mean()), base_prob_median=float(np.median(probs)),
+                  base_prob_ci=(float(np.percentile(probs, 2.5)), float(np.percentile(probs, 97.5))))
+        nn.pop('features', None)
+    view['nn_prediction'] = nn
+    info.update(p_l1=view['p_per_transfer'], p_kat=nn.get('base_prob_mean') if nn_available else None)
+    return view
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  ОСНОВНАЯ ФУНКЦИЯ: ПОЛНЫЙ РАСЧЁТ ОДНОЙ ПАЦИЕНТКИ (L1–L6)
 # ══════════════════════════════════════════════════════════════════════════════
 def predict_single_patient(
@@ -324,6 +320,7 @@ def predict_single_patient(
     known_blasts: Optional[int]   = None,
     known_good:   Optional[int]   = None,
     known_euploid:Optional[int]   = None,
+    n_transfers_planned: Optional[int] = None,
     clinic_successes: Optional[List[int]] = None,
     clinic_trials:    Optional[List[int]] = None,
     n_sim:        int    = 2000,
@@ -347,7 +344,17 @@ def predict_single_patient(
         p_gnn_raw     — float или None
         p_gnn_ens     — float или None (w_gnn × GNN + (1-w_gnn) × KAT)
     """
+    # Load every model BEFORE seeding. Constructing a network initialises its
+    # weights from the global torch RNG, so a lazy first load consumed draws
+    # between the seed and the diffusion sampler: the first calculation of a
+    # process produced a different answer from every later one at the same seed.
+    nn_model = load_nn_model()
+    csdi_model = load_csdi_model()
+    gnn_bundle = load_gnn_bundle()
+
     np.random.seed(seed)
+    if torch is not None:
+        torch.manual_seed(seed)
 
     # ── PatientInput / KnownValues ────────────────────────────────────────
     patient = PatientInput(  # noqa: F821
@@ -363,10 +370,11 @@ def predict_single_patient(
         blasts=known_blasts,
         good=known_good,
         euploid=known_euploid,
+        # 0 = transfer every available embryo sequentially (the pipeline default).
+        n_transfers_planned=int(n_transfers_planned or 0),
     )
 
     # ── L1–L4 + байес + Esteves + кластер ────────────────────────────────
-    nn_model = load_nn_model()
     res = run_pipeline_extended(  # noqa: F821
         patient, known=known,
         attempt_number=int(attempt),
@@ -380,28 +388,39 @@ def predict_single_patient(
     )
 
     # ── Esteves banking (как в app.py строки 932+) ───────────────────────
-    eb = _compute_esteves_banking(float(age), sperm_source, res)
+    eb = res.get('esteves_banking')
+    if eb is None:eb = _pipeline.esteves_banking_analysis(patient, res, sperm_source)
+    if eb.get('forward_at_median'):
+        eb['forward_at_median'].pop('samples', None)
+
+    # ── Прогноз на перенос: сценарии, где есть что переносить ─────────────
+    res_transfer = transfer_view(res, nn_model is not None)
 
     # ── L3: из nn_prediction (уже внутри run_pipeline_extended) ──────────
-    _nn   = res.get("nn_prediction", {})
+    # Without KAT weights nn_prediction holds the FORTUNE+KPI fallback, i.e.
+    # the L1 prior itself; it must not enter L7 as independent evidence.
+    _nn   = res_transfer.get("nn_prediction", {})
     _nvsa = res.get("nn_nvsa", {})
-    p_kat_raw = _nn.get("base_prob_mean")
+    p_kat_raw = _nn.get("base_prob_mean") if nn_model is not None else None
     p_nvsa    = _nvsa.get("adjusted_mean")
     nn_info   = get_nn_model_info(nn_model)
 
     # ── L5: CSDI Hybrid v3 ───────────────────────────────────────────────
-    csdi_model  = load_csdi_model()
     csdi_result = None
+    csdi_applicability={'available':False,'used_in_fusion':False,'reason':'model_unavailable'}
     p_csdi      = None
     if csdi_model is not None:
         try:
-            _foll_count = follicles if follicles is not None else int(afc)
-            _okk_med  = max(1, int(res["okk_med"]))
-            _mii_med  = max(1, int(res["mii_med"]))
-            _pn2_med  = max(1, int(res["pn2_med"]))
+            from embryology import follicle_kpi_score, impute_follicles
+            _okk_med  = max(0, int(round(res_transfer["okk_med"])))
+            _mii_med  = max(0, int(round(res_transfer["mii_med"])))
+            _pn2_med  = max(0, int(round(res_transfer["pn2_med"])))
+            _good_med = max(0, int(round(res_transfer["good_med"])))
+            _foll_count = int(follicles) if follicles is not None else int(impute_follicles(_okk_med))
             _okk_rate = min(1.0, _okk_med / max(_foll_count, 1))
             _fert_rate = min(1.0, _pn2_med / max(_mii_med, 1))
-            _kpi = float(res["kpi_score_median"])
+            # Training KPIScore is the follicle-based formula (99.8% of CSDI rows).
+            _kpi = float(follicle_kpi_score(float(age), _foll_count, _mii_med, _fert_rate, _good_med))
 
             patient_csdi = {
                 "Количество фолликулов":  float(_foll_count),
@@ -412,13 +431,27 @@ def predict_single_patient(
                 "Частота оплодотворения": _fert_rate,
                 "KPIScore":               _kpi,
             }
-            csdi_result = csdi_model.mc_sample(patient_csdi, n_samples=1000)
-            p_csdi = csdi_result.get("P_pregnancy")
+            from pathlib import Path
+            from befe_batch_utils import assess_csdi
+            csdi_applicability=assess_csdi(patient_csdi,str(Path(__file__).resolve().parents[1]))
+            if csdi_applicability['in_support']:
+                csdi_result = csdi_model.mc_sample(patient_csdi, n_samples=1000)
+                p_csdi = csdi_result.get('P_pregnancy')
         except Exception as _e:
             print(f"[CORE] CSDI inference error: {_e}")
 
+    try:
+        csdi_ok=bool(csdi_result is not None and p_csdi is not None and np.isfinite(float(p_csdi)) and 0<=float(p_csdi)<=1)
+    except (TypeError,ValueError):
+        csdi_ok=False
+    csdi_applicability['inference_available']=csdi_ok
+    if not csdi_ok:
+        csdi_result=None;p_csdi=None
+        csdi_applicability['used_in_fusion']=False
+        if csdi_applicability.get('in_support'):
+            csdi_applicability['reason']='inference_failed'
+
     # ── L6: GNN ──────────────────────────────────────────────────────────
-    gnn_bundle  = load_gnn_bundle()
     gnn_result  = {"available": False, "gnn_prob": None,
                    "ensemble_prob": None, "w_gnn": 0.35}
     p_gnn_raw   = None
@@ -429,9 +462,10 @@ def predict_single_patient(
                 age=float(age),
                 afc=int(afc),
                 attempt=int(attempt),
-                res=res,
+                res=res_transfer,
                 known=known,
                 p_kat_raw=p_kat_raw,
+                follicles=follicles,
             )
             gnn_result = _predict_gnn(  # noqa: F821
                 gnn_bundle, gnn_feats, prai_score=p_kat_raw
@@ -443,14 +477,16 @@ def predict_single_patient(
 
     return {
         "res":             res,
+        "res_transfer":    res_transfer,
         "eb":              eb,
         "csdi_result":     csdi_result,
+        "csdi_applicability":csdi_applicability,
         "gnn_result":      gnn_result,
         "known":           known,
         # Удобные shortcut-поля для CSV-записи
         "nn_available":    nn_model is not None,
-        "csdi_available":  csdi_model is not None,
-        "gnn_available":   gnn_bundle.get("available", False),
+        "csdi_available":  csdi_ok,
+        "gnn_available":   p_gnn_raw is not None,
         "p_kat_raw":       p_kat_raw,
         "p_nvsa":          p_nvsa,
         "nn_info":         nn_info,

@@ -27,7 +27,8 @@ import requests
 # ──────────────────────────────────────────────────────────────────────────
 #  КОНФИГУРАЦИЯ
 # ──────────────────────────────────────────────────────────────────────────
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")  # 127.0.0.1, не localhost (обход IPv6 в Windows)
+from src.local_network import local_ollama_host
+OLLAMA_HOST = local_ollama_host(os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"))
 MEDGEMMA    = os.environ.get("DT_LLM_NARRATOR", "medgemma1.5")  # Tier 0
 GEMMA4      = os.environ.get("DT_LLM_AGENT", "gemma4")          # Tier 2
 

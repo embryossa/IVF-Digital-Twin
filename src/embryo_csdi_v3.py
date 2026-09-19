@@ -49,6 +49,8 @@
 #   COND(7) + Bl + good_Bl ──►  LightGBM + Platt ──► P(pregnancy)
 # ============================================================
 
+
+from modelio import model_exists, load_torch, load_joblib
 import os
 import json
 import pickle
@@ -168,9 +170,7 @@ def derive_rates(count_arr: np.ndarray,
     pn2  = np.maximum(pn2_values, 1)          # protect from zero division
     blast_rate = np.clip(Bl / pn2, 0.0, 1.0)
 
-    good_rate  = np.where(Bl > 0,
-                          np.clip(gBl / Bl, 0.0, 1.0),
-                          0.0)
+    good_rate = np.clip(np.divide(gBl, Bl, out=np.zeros_like(Bl, dtype=float), where=Bl > 0), 0.0, 1.0)
     return np.stack([blast_rate, good_rate], axis=1)
 
 
@@ -779,6 +779,11 @@ class EmbryoHybridV3:
           Частота бластоцист | Частота бластоцист хор.кач-ва
         """
         assert self.denoiser is not None, "Сначала вызови fit()"
+        pn2=float(patient['2 pN'])
+        if not np.isfinite(pn2) or pn2 < 0 or pn2 != int(pn2):
+            raise ValueError('2PN must be a non-negative integer')
+        if pn2 == 0:
+            return pd.DataFrame(np.zeros((n_samples,len(OUTPUT_FEATURES))),columns=OUTPUT_FEATURES)
         cond_arr = np.array([[patient[f] for f in COND_FEATURES]],
                             dtype=np.float32)
         cond_t   = torch.tensor(
@@ -787,6 +792,9 @@ class EmbryoHybridV3:
             self.denoiser, cond_t, n_samples, COUNT_DIM, self.ddim_steps)
         counts   = post_process_counts(
             self.normalizer.inverse_count(raw.cpu().numpy()))
+        # A conditional scenario cannot produce more blastocysts than 2PN.
+        counts[:,0] = np.minimum(counts[:,0],pn2)
+        counts[:,1] = np.minimum(counts[:,1],counts[:,0])
         pn2_val  = np.full(n_samples, float(patient["2 pN"]))
         rates    = derive_rates(counts, pn2_val)
         return pd.DataFrame(
@@ -803,25 +811,37 @@ class EmbryoHybridV3:
         p_preg  = float(self.classifier.predict_proba(
             cond_df, med_cnt.reshape(1, -1))[0])
 
-        # Wilson CI
-        n_pos, n, z = int(p_preg * 1000), 1000, 1.96
-        denom = n + z**2
-        ctr   = (n_pos + z**2 / 2) / denom
-        mrg   = z * np.sqrt(n_pos * (n - n_pos) / n + z**2 / 4) / denom
+        # Propagate generated embryology through the existing classifier in one
+        # call. The old Wilson interval fabricated 1000 Bernoulli observations.
+        # These quantiles describe MC prediction spread, not a CI of the mean.
+        cond_rows = pd.DataFrame([patient] * len(counts))
+        p_samples = np.asarray(self.classifier.predict_proba(cond_rows, counts), dtype=float).reshape(-1)
+        if len(p_samples) != len(counts) or not np.isfinite(p_samples).all():
+            raise ValueError('Invalid CSDI probability distribution')
+        p_samples = np.clip(p_samples, 0.0, 1.0)
+        interval = np.quantile(p_samples, [0.025, 0.975])
 
         # Conformal PI для COUNT (lo ≥ 0)
         lo90, hi90 = self.conformal.get_intervals(
             med_cnt.reshape(1, -1), level=0.90)
         lo50, hi50 = self.conformal.get_intervals(
             med_cnt.reshape(1, -1), level=0.50)
+        # Restrict intervals to the physically possible conditional support.
+        for bound in (lo90,hi90,lo50,hi50):
+            np.clip(bound,0,float(patient['2 pN']),out=bound)
 
         return {
             'P_pregnancy':       p_preg,
-            'CI_95':             (max(0, ctr - mrg), min(1, ctr + mrg)),
+            'CI_95':             (float(interval[0]), float(interval[1])),
+            'interval_kind':     'mc-prediction-quantiles',
+            'pregnancy_probabilities': p_samples,
+            'P_pregnancy_mean': float(p_samples.mean()),
+            'conditioning': dict(patient),
             'blast_total_median': float(np.median(counts[:, 0])),
             'good_blast_median':  float(np.median(counts[:, 1])),
             'blast_rate_median':  float(df_gen[RATE_FEATURES[0]].median()),
             'good_rate_median':   float(df_gen[RATE_FEATURES[1]].median()),
+            'PI_95_counts': {name: [float(v) for v in np.quantile(counts[:,i],[.025,.975])] for i,name in enumerate(COUNT_FEATURES)},
             'PI_90_counts': {
                 f: (float(lo90[0, j]), float(hi90[0, j]))
                 for j, f in enumerate(COUNT_FEATURES)},
@@ -985,24 +1005,24 @@ class EmbryoHybridV3:
             dropout=cfg['dropout'],
         ).to(DEVICE)
         obj.denoiser.load_state_dict(
-            torch.load(f'{save_dir}/csdi_weights.pt',
+            load_torch(f'{save_dir}/csdi_weights.pt',
                        map_location=DEVICE, weights_only=True))
         obj.denoiser.eval()
 
         # Normalizer — реконструируем из numpy-массивов
-        norm_state = torch.load(f'{save_dir}/normalizer.pt',
+        norm_state = load_torch(f'{save_dir}/normalizer.pt',
                                 map_location='cpu', weights_only=False)
         obj.normalizer = QuantileNormalizer(norm_state['n_quantiles'])
         obj.normalizer.cond_qt  = _deserialize_qt(norm_state['cond_qt'])
         obj.normalizer.count_qt = _deserialize_qt(norm_state['count_qt'])
 
         # LightGBM — восстанавливаем через __setstate__
-        lgb_state = torch.load(f'{save_dir}/lgb_state.pt',
+        lgb_state = load_torch(f'{save_dir}/lgb_state.pt',
                                map_location='cpu', weights_only=False)
         obj.classifier.clf = lgb.LGBMClassifier()
         obj.classifier.clf.__setstate__(lgb_state)
 
-        platt_state = torch.load(f'{save_dir}/platt_calibrator.pt',
+        platt_state = load_torch(f'{save_dir}/platt_calibrator.pt',
                                  map_location='cpu', weights_only=False)
         lr = LogisticRegression()
         lr.coef_      = np.array(platt_state['coef_'])
@@ -1012,7 +1032,7 @@ class EmbryoHybridV3:
         obj.classifier._fitted = True
 
         # Conformal — реконструируем из квантильных радиусов
-        conf_state = torch.load(f'{save_dir}/conformal.pt',
+        conf_state = load_torch(f'{save_dir}/conformal.pt',
                                 map_location='cpu', weights_only=False)
         obj.conformal = ConformalizationLayer()
         obj.conformal.quantiles = {
@@ -1020,7 +1040,7 @@ class EmbryoHybridV3:
 
         # History
         hist_path = f'{save_dir}/training_history.json'
-        if os.path.exists(hist_path):
+        if model_exists(hist_path):
             with open(hist_path) as f:
                 obj.history = json.load(f)
 
@@ -1416,7 +1436,7 @@ def compare_all_versions(paths_and_labels: list,
     """
     loaded = []
     for p, lbl in paths_and_labels:
-        if os.path.exists(p):
+        if model_exists(p):
             with open(p) as f:
                 loaded.append((json.load(f), lbl))
     if len(loaded) < 2:

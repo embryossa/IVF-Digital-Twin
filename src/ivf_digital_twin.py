@@ -62,6 +62,8 @@
 # Run:  python ivf_digital_twin_v6_1.py
 # ============================================================
 
+
+from modelio import model_exists, load_torch, load_joblib
 import os, math, tempfile
 import numpy as np
 import pandas as pd
@@ -72,6 +74,10 @@ import plotly.graph_objects as go
 import plotly.express as px
 import pdfkit
 from scipy.stats import norm, beta as beta_dist
+from embryology import (parameters as embryology_parameters, sample_conditioned_counts, blast_mean, good_mean,
+                        BLAST_KAPPA, BLAST_PI_ZERO, GOOD_KAPPA, transfer_candidates, fair_probability,
+                        follicle_kpi_score, impute_follicles, cycle_probabilities,
+                        frailty_transfer_probability)
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -112,24 +118,8 @@ except Exception as e:
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 def _model_path(filename: str) -> str:
-    """
-    Look for NN model files in this order:
-      1. Same directory as this source file  (src/)
-      2. Parent directory  (repo root — where app.py lives)
-      3. 'models/' subfolder inside repo root
-    Returns the first path where the file exists, or falls back
-    to repo-root path so the missing-file error message is useful.
-    """
-    candidates = [
-        os.path.join(_HERE, filename),                      # src/
-        os.path.join(_HERE, "..", filename),                # repo root
-        os.path.join(_HERE, "..", "models", filename),      # repo/models/
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            return os.path.normpath(p)
-    # not found — return root-level path for the error message
-    return os.path.normpath(os.path.join(_HERE, "..", filename))
+    """Clinic artifacts have one location, independent of the launch directory."""
+    return os.path.normpath(os.path.join(_HERE, "..", "models", filename))
 
 NN_MODEL_PATHS = {
     'kan':              _model_path('Prediction_KAN.pth'),
@@ -168,8 +158,8 @@ class KnownValues:
     Bayesian conditioning inputs.
     Any field that is not None becomes a point-mass observation
     that overrides simulation at that stage and propagates
-    deterministically to all upstream displayed values, then
-    stochastically (via binomial filters) downstream.
+    to the discrete chain. Unknown ancestors are sampled from their
+    conditional distribution; downstream counts remain stochastic.
     """
     okk:       Optional[int] = None        # retrieved oocytes
     mii:       Optional[int] = None        # MII (mature) oocytes
@@ -311,82 +301,36 @@ def fortune_per_transfer_logit(patient: PatientInput) -> float:
 
 def _zinb_p_zero(patient: PatientInput) -> float:
     """
-    Probability of structural zero (cancelled / empty-follicle cycle).
+    Probability of a structural zero beyond the negative-binomial zero.
 
-    Logistic model calibrated to published cancellation rates:
-      - Standard responder (age 35, AMH 2.5, AFC 15)  → ~2–4 %
-      - Poor responder    (age 42, AMH 0.5, AFC 6)    → ~12–18 %
-      - High responder    (age 28, AMH 4.5, AFC 28)   → ~0.5–1 %
-      - Elderly poor      (age 44, AMH 0.3, AFC 4)    → ~20–25 %
-
-    Coefficients:
-      intercept  = −3.2
-      age        = +0.40 (older → more cancellations)
-      AMH (z)    = −0.60 (higher AMH → fewer cancellations)
-      AFC (z)    = −0.80 (higher AFC → fewer cancellations)
-
-    Sources: ESHRE OHSS Guideline 2023; Herasight zero-component
-    Table A1 (age +0.050, stimulation −0.796 on the zero logit);
-    re-calibrated here to include AMH and AFC which are not in HFEA.
+    2026-09-11 refit: in Fertimed stimulated cycles blank oocyte counts are
+    explained by NB zeros plus a constant unrecorded rate, so no separate
+    structural-zero component is identifiable and this returns 0.
     """
-    z_age = (patient.female_age - 36.3) / 5.5
-    z_amh = (patient.amh        - 2.0)  / 1.2
-    z_afc = (patient.afc        - 12.0) / 9.0
-    lp = -3.2 + 0.40 * z_age - 0.60 * z_amh - 0.80 * z_afc
-    return float(sigmoid(lp))
+    return embryology_parameters(patient)['zero']
 
 
 def stage1_oocytes(patient: PatientInput, known: KnownValues, n: int = N_SIM):
     """
     Stage 1 — Retrieved oocytes (OKK)
-    Model (v6.2): Zero-Inflated Negative Binomial (ZINB)
+    Model (7.1, refit 2026-09-11): negative binomial with a log link
 
-    ZINB addresses two key limitations of the truncated Normal:
-      (1) Structural zeros — cycles cancelled before retrieval or resulting
-          in empty follicle puncture.  These are NOT sampling noise; they
-          arise from protocol failure, poor ovarian response to stimulation,
-          or premature ovulation.  The truncated Normal clipped to [1,50]
-          formally forbids them.  ZINB explicitly models them via a
-          Bernoulli zero-inflation component P_zero(age, AMH, AFC).
-      (2) Right-tail overdispersion — oocyte yields are right-skewed with
-          heavier tails than the Normal, especially among high responders.
-          The Negative Binomial's variance = μ + μ²/θ grows quadratically
-          with the mean, producing the correct tail behaviour.
+      mu    = exp(c0 + c_amh·ln(AMH+0.1) + c_afc·ln(AFC+1) + c_age·(age−35))
+      theta = 5.77
+      OKK   ~ NB(theta, theta/(theta+mu)), clipped to [0, 50]
 
-    Parameters:
-      mu    = linear predictor (ART-ONE formula, locally calibrated)
-      theta = NB dispersion = 5.0
-              (calibrated to HFEA registry NB fit in Herasight medRxiv 2025;
-               larger θ → less overdispersion; θ→∞ → Poisson)
-      p_zero = logistic function of age, AMH, AFC (see _zinb_p_zero above)
-
-    Sampling:
-      For each iteration i:
-        if Bernoulli(p_zero)  → OKK_i = 0   (structural zero / cancellation)
-        else                  → OKK_i ~ NB(θ, θ/(θ+μ)), clipped to [1, 50]
-
-    References:
-      - Craig et al. medRxiv 2025.09.27.25336680 (ZINB for oocyte retrieval)
-      - Herasight Table A1 (zero-component coefficients, HFEA 103,924 cycles)
-      - ART-ONE (Merck KGaA, CONSORT/ENGAGE/ESTHER trials — count component)
+    Fitted as a zero-truncated NB on Fertimed stimulated cycles (n=687,
+    5-fold patient cross-validation; the former linear ART-ONE predictor
+    under-estimated yield, e.g. AFC<5: 1.4 vs observed 2.7 oocytes). The
+    zero-oocyte probability is the NB zero; see _zinb_p_zero. Coefficients
+    and provenance: src/embryology.py.
     """
     if known.okk is not None:
         return np.full(n, int(known.okk), dtype=int)
 
-    # ── Count-component mean (ART-ONE linear predictor) ───────
-    mu = (3.25
-          + 1.20 * patient.amh
-          + 0.55 * patient.afc
-          - 0.15 * patient.female_age
-          - 0.03 * patient.bmi)
-    mu = max(mu, 0.5)          # allow near-zero mean for severe poor responders
-
-    # ── NB dispersion (from Herasight HFEA fit) ───────────────
-    theta = 5.0
-    p_nb  = theta / (theta + mu)   # scipy/numpy NB parameterisation
-
-    # ── Zero-inflation probability ────────────────────────────
-    p_zero = _zinb_p_zero(patient)
+    pars = embryology_parameters(patient)
+    mu,theta,p_zero=pars['mu'],pars['theta'],pars['zero']
+    p_nb=theta/(theta+mu)
 
     # ── Sample ───────────────────────────────────────────────
     is_zero = np.random.random(n) < p_zero
@@ -405,9 +349,7 @@ def stage2_mii(oocytes: np.ndarray, patient: PatientInput, known: KnownValues):
     if known.mii is not None:
         return np.full(len(oocytes), int(known.mii), dtype=int), None
 
-    a, f = patient.female_age, patient.amh
-    logit_p = 2.4665 + 0.005*a - 0.782*1 + 0.24*f - 0.069
-    p_mat = sigmoid(logit_p)
+    p_mat = embryology_parameters(patient)['maturity']
     mii = np.random.binomial(oocytes, p_mat)
     mii = np.maximum(mii, 0)
     return mii, p_mat
@@ -423,51 +365,29 @@ def stage3_fertilization(mii: np.ndarray, patient: PatientInput, known: KnownVal
     if known.pn2 is not None:
         return np.full(len(mii), int(known.pn2), dtype=int), None
 
-    a = patient.female_age
-    logit_p = 1.1678 + 0.004*a - 0.303*1 - 0.051
-    p_fert = sigmoid(logit_p)
+    p_fert = embryology_parameters(patient)['fertilisation']
     pn2 = np.random.binomial(mii, p_fert)
     return pn2, p_fert
 
 
 def stage4_blastulation(pn2: np.ndarray, patient: PatientInput, known: KnownValues):
+    """L1 S4: locally fitted zero-inflated beta-binomial blastocyst yield.
+
+    Same age/count-dependent law as the exact conditional chain. See the
+    2026-09-10 refit provenance; absence of blastocysts is an explicit outcome.
     """
-    Stage 4 — Blastocysts
-    UPDATED v5.0:
-      blast_rate = clip(0.70 – 0.012·max(0, age – 40),  0.30,  0.75)
-
-    Calibrated to Romanski et al. 2022 (3,362 patients) and
-    Sainte-Rose et al. 2021 (4,952 zygotes): stable ~60–67 %
-    blastulation rate through age 40, accelerated decline thereafter.
-
-    Gaussian noise (SD = 0.06) captures inter-lab variability.
-    """
-    if known.blasts is not None:
-        return np.full(len(pn2), int(known.blasts), dtype=int)
-
-    age = patient.female_age
-    blast_mu = float(np.clip(0.70 - 0.012 * max(0, age - 40), 0.30, 0.75))
-    p_blast = np.clip(np.random.normal(blast_mu, 0.06, len(pn2)), 0.10, 0.90)
-    return np.random.binomial(pn2, p_blast)
+    if known.blasts is not None:return np.full(len(pn2),int(known.blasts),dtype=int)
+    mu=blast_mean(patient.female_age,pn2)
+    p=np.random.beta(mu*BLAST_KAPPA,(1-mu)*BLAST_KAPPA,len(pn2))
+    blasts=np.random.binomial(pn2,p)
+    return np.where(np.random.random(len(pn2))<BLAST_PI_ZERO,0,blasts)
 
 
 def stage5_good_blasts(blasts: np.ndarray, patient: PatientInput, known: KnownValues):
-    """
-    Stage 5 — Good-quality blastocysts
-    UPDATED v5.0:
-      good_rate = clip(0.78 – 0.008·max(0, age – 35),  0.40,  0.85)
-
-    Beta(k=10) sampling on the rate captures grading variability.
-    Mean good-blast fraction now matches Herasight clinical reports
-    (~70–75 % of blastocysts at typical reproductive age).
-    """
-    if known.good is not None:
-        return np.full(len(blasts), int(known.good), dtype=int)
-
-    age = patient.female_age
-    good_mu = float(np.clip(0.78 - 0.008 * max(0, age - 35), 0.40, 0.85))
-    p_good = np.random.beta(good_mu * 10, (1 - good_mu) * 10, len(blasts))
-    return np.random.binomial(blasts, p_good)
+    """L1 S5: locally fitted beta-binomial quality, conditional on blast count."""
+    if known.good is not None:return np.full(len(blasts),int(known.good),dtype=int)
+    mu=good_mean(patient.female_age,blasts)
+    return np.random.binomial(blasts,np.random.beta(mu*GOOD_KAPPA,(1-mu)*GOOD_KAPPA,len(blasts)))
 
 
 def stage6_euploidy(good_blasts: np.ndarray, patient: PatientInput, known: KnownValues):
@@ -479,20 +399,7 @@ def stage6_euploidy(good_blasts: np.ndarray, patient: PatientInput, known: Known
     if known.euploid is not None:
         return np.full(len(good_blasts), int(known.euploid), dtype=int)
 
-    age = patient.female_age
-    age_table = {
-        (0,  30): 0.70,
-        (30, 35): 0.65,
-        (35, 38): 0.55,
-        (38, 40): 0.35,
-        (40, 42): 0.18,
-        (42, 99): 0.10,
-    }
-    p_eup_centre = 0.10
-    for (lo, hi), p in age_table.items():
-        if lo <= age < hi:
-            p_eup_centre = p
-            break
+    p_eup_centre = embryology_parameters(patient)['euploid']
     p_eup_sample = np.random.beta(p_eup_centre * 6,
                                    (1 - p_eup_centre) * 6,
                                    len(good_blasts))
@@ -505,6 +412,13 @@ def stage6b_warmed(euploid: np.ndarray):
     Fixed 95 % survival per blastocyst (Coello et al. 2021).
     """
     return np.random.binomial(euploid, 0.95)
+
+
+def transfer_scenario_pgt(known: Optional[KnownValues], pgt: Optional[bool] = None) -> bool:
+    """PGT-A scenario: explicit request or an entered euploid count."""
+    if pgt is not None:
+        return bool(pgt)
+    return known is not None and known.euploid is not None
 
 
 def per_transfer_pregnancy_probability(patient: PatientInput) -> float:
@@ -524,10 +438,18 @@ def stage7_pregnancy_cycle(euploid: np.ndarray,
                             good: np.ndarray,
                             patient: PatientInput,
                             known: KnownValues,
-                            kpi_weight: float = KPI_WEIGHT):
+                            kpi_weight: float = KPI_WEIGHT,
+                            fair_warmed: Optional[np.ndarray] = None):
     """
     Stage 7 — Cycle pregnancy outcomes (v5.3 — FORTUNE + KPI ensemble)
     ──────────────────────────────────────────────────────────────────
+
+    TRANSFER SCENARIO (7.1, 2026-09-11): `warmed` holds the good-quality
+    (or, with PGT-A, euploid) embryos available after warming and
+    `fair_warmed` the fair-quality ones, transferred after them with the
+    data-derived fair-quality odds ratio. p_per_sample is the per-transfer
+    probability of the scenario's first embryo; p_per_transfer_if_transfer
+    averages it over scenarios that have a transfer.
 
     PER-TRANSFER PROBABILITY is now a per-iteration random variable
     combining TWO information sources on the logit scale:
@@ -572,41 +494,49 @@ def stage7_pregnancy_cycle(euploid: np.ndarray,
     p_per_sample  = sigmoid((1 - w) * logit_fortune + w * logit_kpi)
     p_per_sample  = np.clip(p_per_sample, 0.01, 0.99)
 
-    # ── Transfer count (capped by user plan if specified)
+    # ── Transfer counts: good quality first, then fair quality (capped by plan)
+    n_good = np.asarray(warmed)
+    n_fair = np.zeros_like(n_good) if fair_warmed is None else np.asarray(fair_warmed)
     if known.n_transfers_planned > 0:
-        n_transfers = np.minimum(warmed, known.n_transfers_planned)
-    else:
-        n_transfers = warmed
+        n_good = np.minimum(n_good, known.n_transfers_planned)
+        n_fair = np.minimum(n_fair, known.n_transfers_planned - n_good)
+    n_transfers = n_good + n_fair
+    p_fair_sample = np.where(n_good >= 1, fair_probability(p_per_sample), p_per_sample)
 
     # ── Cumulative P(>=1 preg) per simulation; = 0 when n_tx[i] = 0
-    p_any_preg_marginal = 1 - (1 - p_per_sample) ** n_transfers
+    # The transfers of one cycle share a random effect, so they are positively
+    # correlated and add less than an independent chain; each per-transfer
+    # probability keeps its marginal value (see embryology.cycle_probabilities).
+    p_any_preg_marginal = cycle_probabilities(p_per_sample, n_good.astype(float), n_fair.astype(float))
 
-    # ── Discrete count of live pregnancies in this cycle
-    rng = np.random.default_rng()
-    n_pregnancies = rng.binomial(n_transfers, p_per_sample)
+    # ── Discrete count of pregnancies in this cycle, under the same shared effect
+    shared_effect = np.random.normal(0.0, 1.0, len(p_per_sample))
+    n_pregnancies = (np.random.binomial(n_good, frailty_transfer_probability(p_per_sample, shared_effect))
+                     + np.random.binomial(n_fair, frailty_transfer_probability(p_fair_sample, shared_effect)))
 
     # ── Three-level decomposition (unchanged logic)
     viable = n_transfers >= 1
     p_viable = float(np.mean(viable))
 
-    p_per_transfer_central = float(np.mean(p_per_sample))      # ensemble central value
+    p_per_transfer_central = float(np.mean(p_per_sample))      # ensemble central value, all scenarios
+    p_per_transfer_if_transfer = float(np.mean(p_per_sample[viable])) if viable.any() else None
 
-    if viable.sum() >= 30:
-        p_cum_if_viable = float(np.mean(p_any_preg_marginal[viable]))
-        cum_if_viable_ci = (
-            float(np.percentile(p_any_preg_marginal[viable], 2.5)),
-            float(np.percentile(p_any_preg_marginal[viable], 97.5))
-        )
+    # Exact law of total probability, including rare and zero-transfer cases.
+    # The unconditional per-transfer mean need not bound the conditional
+    # cumulative mean; enforcing that order changed the cycle probability.
+    if viable.any():
+        values=p_any_preg_marginal[viable]
+        p_cum_if_viable=float(values.mean())
+        cum_if_viable_ci=tuple(float(v) for v in np.quantile(values,[.025,.975]))
+        n_tx_med=int(np.median(n_transfers[viable]))
     else:
-        n_tx_med_fallback = max(int(np.median(n_transfers[viable])) if viable.sum() > 0 else 1, 1)
-        p_cum_if_viable = float(1 - (1 - p_per_transfer_central) ** n_tx_med_fallback)
-        cum_if_viable_ci = (p_cum_if_viable, p_cum_if_viable)
+        p_cum_if_viable=0.0
+        cum_if_viable_ci=(0.0,0.0)
+        n_tx_med=0
+    p_overall=float(np.mean(p_any_preg_marginal))
 
-    p_cum_if_viable = max(p_cum_if_viable, p_per_transfer_central)
-    p_overall = p_viable * p_cum_if_viable
-
-    n_tx_med = max(int(np.median(n_transfers[viable])) if viable.sum() > 0 else 1, 1)
-    rate_only_p = 1 - (1 - p_per_sample) ** n_tx_med
+    rate_only_p = cycle_probabilities(p_per_sample, np.full(len(p_per_sample), float(n_tx_med)),
+                                      np.zeros(len(p_per_sample)))
     rate_ci = (
         float(np.percentile(rate_only_p, 2.5)),
         float(np.percentile(rate_only_p, 97.5))
@@ -617,6 +547,9 @@ def stage7_pregnancy_cycle(euploid: np.ndarray,
         "p_any_preg_marginal":   p_any_preg_marginal,
         "n_pregnancies":         n_pregnancies,
         "n_transfers":           n_transfers,
+        "n_transfers_good":      n_good,
+        "n_transfers_fair":      n_fair,
+        "p_per_transfer_if_transfer": p_per_transfer_if_transfer,
 
         # per-iteration component probabilities (new)
         "sim_p_fortune":         p_fortune,
@@ -659,12 +592,15 @@ def risk_ohss(oocytes):
         "p95_oocytes":     float(np.percentile(oocytes, 95)),
     }
 
-def risk_empty_cycle(blasts, good_blasts):
-    return {
+def risk_empty_cycle(blasts, good_blasts, n_transfers=None):
+    out = {
         "p_no_blast":       float(np.mean(blasts < 1)),
         "p_no_good_blast":  float(np.mean(good_blasts < 1)),
         "p_empty_cycle":    float(np.mean(blasts < 1)),
     }
+    if n_transfers is not None:
+        out["p_no_transfer"] = float(np.mean(np.asarray(n_transfers) < 1))
+    return out
 
 
 # ============================================================
@@ -674,7 +610,8 @@ def risk_empty_cycle(blasts, good_blasts):
 def run_pipeline(patient: PatientInput,
                  known: Optional[KnownValues] = None,
                  kpi_weight: float = KPI_WEIGHT,
-                 n: int = N_SIM) -> Dict:
+                 n: int = N_SIM,
+                 pgt: Optional[bool] = None) -> Dict:
     """
     Run the full stochastic pipeline.
     Any non-None field in `known` is treated as a deterministic observation
@@ -683,22 +620,33 @@ def run_pipeline(patient: PatientInput,
 
     kpi_weight: weight of KPIScore-derived probability in the FORTUNE-KPI
                 ensemble. 0.0 = FORTUNE only, 0.5 = equal (default), 1.0 = KPI only.
+    pgt:        transfer scenario. None = PGT-A only when an euploid count
+                is entered; otherwise every blastocyst is transferable.
     """
     known = known or KnownValues()
+    pgt = transfer_scenario_pgt(known, pgt)
 
-    okk             = stage1_oocytes(patient, known, n)
-    mii, p_mat      = stage2_mii(okk, patient, known)
-    pn2, p_fert     = stage3_fertilization(mii, patient, known)
-    blasts          = stage4_blastulation(pn2, patient, known)
-    good            = stage5_good_blasts(blasts, patient, known)
-    euploid         = stage6_euploidy(good, patient, known)
-    warmed          = stage6b_warmed(euploid)
+    if any(getattr(known,k) is not None for k in ('okk','mii','pn2','blasts','good','euploid')):
+        okk,mii,pn2,blasts,good,euploid=sample_conditioned_counts(patient,known,n)
+        pars=embryology_parameters(patient)
+        p_mat=None if known.mii is not None else pars['maturity']
+        p_fert=None if known.pn2 is not None else pars['fertilisation']
+    else:
+        okk=stage1_oocytes(patient,known,n)
+        mii,p_mat=stage2_mii(okk,patient,known)
+        pn2,p_fert=stage3_fertilization(mii,patient,known)
+        blasts=stage4_blastulation(pn2,patient,known)
+        good=stage5_good_blasts(blasts,patient,known)
+        euploid=stage6_euploidy(good,patient,known)
+    warmed_good, warmed_fair = transfer_candidates(blasts, good, euploid, pgt)
+    warmed          = warmed_good + warmed_fair
     preg_out        = stage7_pregnancy_cycle(
-        euploid, warmed, mii, pn2, good, patient, known, kpi_weight=kpi_weight
+        euploid, warmed_good, mii, pn2, good, patient, known, kpi_weight=kpi_weight,
+        fair_warmed=warmed_fair
     )
 
     ohss            = risk_ohss(okk)
-    empty           = risk_empty_cycle(blasts, good)
+    empty           = risk_empty_cycle(blasts, good, preg_out["n_transfers"])
 
     return {
         # raw arrays
@@ -712,6 +660,9 @@ def run_pipeline(patient: PatientInput,
         "sim_p_any":     preg_out["p_any_preg_marginal"],
         "sim_n_preg":    preg_out["n_pregnancies"],
         "sim_n_tx":      preg_out["n_transfers"],
+        "sim_n_tx_good": preg_out["n_transfers_good"],
+        "sim_n_tx_fair": preg_out["n_transfers_fair"],
+        "transfer_scenario": "pgt" if pgt else "all_blastocysts",
 
         # KPI / FORTUNE / combined per-iteration arrays
         "sim_p_fortune":      preg_out["sim_p_fortune"],
@@ -735,6 +686,7 @@ def run_pipeline(patient: PatientInput,
 
         # ──── per-transfer estimates (FORTUNE / KPI / combined) ──
         "p_per_transfer":          preg_out["p_per_transfer"],
+        "p_per_transfer_if_transfer": preg_out["p_per_transfer_if_transfer"],
         "p_per_transfer_fortune":  preg_out["p_per_transfer_fortune"],
         "p_per_transfer_kpi":      preg_out["p_per_transfer_kpi"],
         "kpi_weight":              preg_out["kpi_weight"],
@@ -962,6 +914,26 @@ if NN_LIBS_AVAILABLE:
             probs = np.clip(probs, 0.001, 0.999)
             return np.column_stack((1.0 - probs, probs))
 
+class InterpolatedIsotonic:
+    """Monotone linear interpolation through the centres of isotonic steps.
+
+    The shipped isotonic calibrator has 16 constant levels: raw ensemble
+    outputs 0.510-0.607 all map to 0.5897 and 0.6142 -> 0.6143 jumps from
+    0.611 to 0.707, so KAT could not respond to embryology inside a step.
+    Interpolating the same calibration curve keeps its fit on protocols_15k
+    (Brier 0.15584 vs 0.15574, log loss 0.4641 vs 0.4637; 2026-09-11 check)
+    and removes plateaus and jumps. Outputs stay within the fitted range.
+    """
+    def __init__(self, isotonic):
+        xs, ys = np.asarray(isotonic.X_thresholds_, float), np.asarray(isotonic.y_thresholds_, float)
+        levels = sorted(((xs[ys == y].min() + xs[ys == y].max()) / 2, y) for y in np.unique(ys))
+        self.x_nodes, self.y_nodes = (np.array(v, dtype=float) for v in zip(*levels))
+        self.isotonic = isotonic
+
+    def predict(self, p):
+        return np.interp(np.asarray(p, dtype=float), self.x_nodes, self.y_nodes)
+
+
 def load_nn_ensemble(paths: dict = NN_MODEL_PATHS):
     """
     Load the retrained NN ensemble. Required files:
@@ -981,7 +953,7 @@ def load_nn_ensemble(paths: dict = NN_MODEL_PATHS):
         return None
 
     required = {k: paths[k] for k in ("kan", "ft")}
-    missing_required = {k: p for k, p in required.items() if not os.path.exists(p)}
+    missing_required = {k: p for k, p in required.items() if not model_exists(p)}
     if missing_required:
         print("[v6] Required NN model files not found:")
         for k, p in missing_required.items():
@@ -997,12 +969,12 @@ def load_nn_ensemble(paths: dict = NN_MODEL_PATHS):
     def _torch_load(path):
         """Compatible torch.load for both newer and older PyTorch versions."""
         try:
-            return torch.load(path, map_location="cpu", weights_only=True)
+            return load_torch(path, map_location="cpu", weights_only=True)
         except TypeError:
-            return torch.load(path, map_location="cpu")
+            return load_torch(path, map_location="cpu")
         except Exception:
             # Some older checkpoints / PyTorch builds are not compatible with weights_only=True.
-            return torch.load(path, map_location="cpu", weights_only=False)
+            return load_torch(path, map_location="cpu", weights_only=False)
 
     try:
         kan_model = KAN(width=[18, 10, 1], grid=5, k=3, grid_range=(-50.0, 50.0))
@@ -1014,7 +986,7 @@ def load_nn_ensemble(paths: dict = NN_MODEL_PATHS):
         print(f"[v6] True KAN loaded: {paths['kan']}")
 
         try:
-            ft_model = joblib.load(paths["ft"])
+            ft_model = load_joblib(paths["ft"])
             print(f"[v6] FTTransformer loaded: {paths['ft']}")
         except ModuleNotFoundError as e:
             missing_mod = str(e).replace("No module named ", "").strip("'\"")
@@ -1033,7 +1005,7 @@ def load_nn_ensemble(paths: dict = NN_MODEL_PATHS):
 
         # Optional: load learned ensemble raw weights if they are saved separately.
         ew_path = paths.get("ensemble_weights")
-        if ew_path and os.path.exists(ew_path):
+        if ew_path and model_exists(ew_path):
             raw_w = _torch_load(ew_path)
             if isinstance(raw_w, dict):
                 raw_w = raw_w.get("raw_weights", raw_w.get("ensemble_raw_weights", raw_w))
@@ -1053,18 +1025,20 @@ def load_nn_ensemble(paths: dict = NN_MODEL_PATHS):
         # Optional new isotonic calibrator saved by train_kat.py.
         calibrator = None
         iso_path = paths.get("isotonic")
-        if iso_path and os.path.exists(iso_path):
+        if iso_path and model_exists(iso_path):
             try:
-                calibrator = joblib.load(iso_path)
-                print(f"[v6] Isotonic ensemble calibrator loaded: {iso_path}")
+                calibrator = load_joblib(iso_path)
+                if hasattr(calibrator, "X_thresholds_") and hasattr(calibrator, "y_thresholds_"):
+                    calibrator = InterpolatedIsotonic(calibrator)
+                print(f"[v6] Isotonic ensemble calibrator loaded (interpolated steps): {iso_path}")
             except Exception as e:
                 print(f"[v6] Isotonic calibrator could not be loaded ({e}); using uncalibrated ensemble.")
 
         # Optional legacy calibrated wrapper. Use only if present and loadable.
         legacy_path = paths.get("calibrated")
-        if legacy_path and os.path.exists(legacy_path):
+        if legacy_path and model_exists(legacy_path):
             try:
-                wrapped = joblib.load(legacy_path)
+                wrapped = load_joblib(legacy_path)
                 print(f"[v6] Legacy calibrated wrapper loaded: {legacy_path}")
                 return wrapped
             except Exception as e:
@@ -1073,7 +1047,7 @@ def load_nn_ensemble(paths: dict = NN_MODEL_PATHS):
         wrapped = EnsembleWrapper(
             ensemble,
             calibrator=calibrator,
-            source_label="KAN + FT-Transformer ensemble" + (" + isotonic calibration" if calibrator else "")
+            source_label="KAN + FT-Transformer ensemble" + (" + interpolated isotonic calibration" if calibrator else "")
         )
         print("[v6] NN ensemble ready.")
         return wrapped
@@ -1103,40 +1077,52 @@ def calculate_nn_kpi_score(age: float, follicles: int, mii: np.ndarray,
     NN's internal KPIScore — uses follicle count instead of AMH.
     Returns int array (len = MC iterations), range [5, 25].
     """
-    a_score = 1 if age >= 40 else (5 if age <= 36 else 3)
-    b_score = 5 if follicles > 15 else (3 if follicles >= 8 else 1)
-    c_score = np.where(mii <= 3, 1, np.where(mii <= 7, 3, 5))
-    d_score = np.where(fert_rate < 0.50, 1, np.where(fert_rate <= 0.65, 3, 5))
-    e_score = np.where(good == 0, 1, np.where(good <= 2, 3, 5))
-    return (a_score + b_score + c_score + d_score + e_score).astype(int)
+    return follicle_kpi_score(age, follicles, mii, fert_rate, good)
+
+
+def scenario_follicles(okk: np.ndarray, follicles: Optional[int] = None) -> np.ndarray:
+    """Punctured follicles per scenario: the entered count, else implied by OCC.
+
+    The training column is follicles at puncture (median OCC/follicles 0.846),
+    not the antral follicle count.
+    """
+    okk = np.asarray(okk, dtype=float)
+    if follicles is not None:
+        return np.full(len(okk), float(follicles))
+    return impute_follicles(okk)
 
 
 def build_nn_features(patient: PatientInput, res: Dict,
                       attempt_number: int, follicles: Optional[int] = None) -> pd.DataFrame:
     """
     Build a (N_SIM x 18) DataFrame of NN inputs from the v5.3 simulation.
+
+    Columns the simulation does not observe use their protocols_15k training
+    definitions for a single blastocyst transfer (2026-09-11 contract check):
+    day-5 embryos = round((Bl+2PN)/2), frozen = max(good-1, 0), follicles =
+    entered count or OCC/0.846.
     """
     n = len(res['sim_okk'])
-    follicles = follicles if follicles is not None else int(patient.afc)
 
     okk    = res['sim_okk'].astype(float)
     mii    = res['sim_mii'].astype(float)
     pn2    = res['sim_pn2'].astype(float)
     blasts = res['sim_blasts'].astype(float)
     good   = res['sim_good'].astype(float)
+    foll   = scenario_follicles(okk, follicles)
 
     fert_rate = np.where(mii > 0, pn2 / np.maximum(mii, 1), 0.0)
     cleav_rate = np.where(pn2 > 0, 1.0, 0.0)        # all 2PN cleave (per spec)
     blast_rate = np.where(pn2 > 0, blasts / np.maximum(pn2, 1), 0.0)
     good_rate  = np.where(pn2 > 0, good / np.maximum(pn2, 1), 0.0)
-    okk_rate   = okk / max(follicles, 1)
+    okk_rate   = okk / np.maximum(foll, 1)
 
-    kpi_nn = calculate_nn_kpi_score(patient.female_age, follicles, mii, fert_rate, good)
+    kpi_nn = calculate_nn_kpi_score(patient.female_age, foll, mii, fert_rate, good)
 
     df = pd.DataFrame({
         "Возраст":                                  np.full(n, patient.female_age, dtype=float),
         "№ попытки":                                np.full(n, attempt_number, dtype=float),
-        "Количество фолликулов":                    np.full(n, follicles, dtype=float),
+        "Количество фолликулов":                    foll,
         "Число ОКК":                                okk,
         "Число инсеминированных":                   mii,
         "2 pN":                                     pn2,
@@ -1148,8 +1134,8 @@ def build_nn_features(patient: PatientInput, res: Dict,
         "Частота формирования бластоцист":          blast_rate,
         "Частота формирования бластоцист хорошего качества": good_rate,
         "Частота получения ОКК":                    okk_rate,
-        "Число эмбрионов 5 дня":                    pn2,        # all cultured to d5
-        "Заморожено эмбрионов":                     good,       # good blasts frozen
+        "Число эмбрионов 5 дня":                    np.rint((blasts + pn2) / 2),
+        "Заморожено эмбрионов":                     np.maximum(good - 1, 0),
         "Перенесено эмбрионов":                     np.ones(n), # single embryo transfer
         "KPIScore":                                 kpi_nn.astype(float),
     })
@@ -1447,6 +1433,32 @@ def bayesian_posterior_pregnancy(
 ESTEVES_SPERM_SOURCES = ("ejaculate", "testicular_NOA",
                          "testicular_OA", "epididymal")
 
+# Callers (desktop UI, batch exports) use their own vocabulary. Resolve it to
+# the Esteves strata explicitly instead of silently defaulting to ejaculate:
+# a report that prints a source the model never used is worse than no report.
+ESTEVES_SPERM_ALIASES = {
+    "donor": "ejaculate",           # donor sperm is ejaculated sperm
+    "partner": "ejaculate",
+    "tese_oa": "testicular_OA",
+    "tese_noa": "testicular_NOA",
+    "pesa": "epididymal",
+    "mesa": "epididymal",
+}
+
+
+def resolve_sperm_source(sperm_source: str) -> str:
+    """Map a caller's sperm-source label onto an Esteves stratum.
+
+    Returns the applied stratum. Ambiguous surgical/unknown labels require
+    correction; silently treating them as ejaculated sperm changes the model.
+    """
+    value = str(sperm_source or "").strip()
+    if value in ESTEVES_SPERM_SOURCES:
+        return value
+    if value.lower() in ESTEVES_SPERM_ALIASES:
+        return ESTEVES_SPERM_ALIASES[value.lower()]
+    raise ValueError('Unknown or ambiguous sperm source: specify the Esteves stratum')
+
 
 def esteves_p_euploid_per_mii(age: float,
                                sperm_source: str = "ejaculate") -> float:
@@ -1467,8 +1479,7 @@ def esteves_p_euploid_per_mii(age: float,
     Returns probability in (0, 1) that one MII oocyte ultimately
     produces a euploid blastocyst.
     """
-    if sperm_source not in ESTEVES_SPERM_SOURCES:
-        sperm_source = "ejaculate"
+    sperm_source = resolve_sperm_source(sperm_source)
     a = age - 38.9066
     if sperm_source == "testicular_NOA":
         lp = -2.6518 - 0.1530924 * a
@@ -1537,6 +1548,44 @@ def esteves_mii_needed(age: float, k_target: int,
             "k_target": k_target, "confidence": confidence}
 
 
+def transfers_for_pregnancy_target(p_transfer, target):
+    """Transfers needed to reach the target probability at a constant per-transfer rate.
+
+    Successive transfers share the cycle-level random effect used everywhere else
+    (embryology.cycle_probabilities), so this needs at least as many embryos as
+    the former independent chain. None means unavailable or unattainable; no
+    fitted success probability is manufactured when the source probability is
+    zero or absent.
+    """
+    if not math.isfinite(target) or not 0 < target <= 1:
+        raise ValueError("Invalid pregnancy target")
+    if p_transfer is None:
+        return None
+    if not math.isfinite(p_transfer) or not 0 <= p_transfer <= 1:
+        raise ValueError("Invalid per-transfer probability")
+    if p_transfer == 1:
+        return 1
+    if p_transfer == 0 or target == 1:
+        return None
+    def reaches(n):
+        value = cycle_probabilities(np.array([float(p_transfer)]), np.array([float(n)]), np.zeros(1))[0]
+        # Round-off at an exact target must not add a spurious extra transfer.
+        return value + 1e-9 >= target
+    high = max(1, int(math.ceil(math.log1p(-target) / math.log1p(-p_transfer))))
+    while not reaches(high):
+        if high > 1_000_000:
+            return None
+        high *= 2
+    low = 1
+    while low < high:
+        middle = (low + high) // 2
+        if reaches(middle):
+            high = middle
+        else:
+            low = middle + 1
+    return low
+
+
 def esteves_banking_analysis(patient: PatientInput,
                               res: Dict,
                               sperm_source: str = "ejaculate",
@@ -1557,21 +1606,23 @@ def esteves_banking_analysis(patient: PatientInput,
     Returns a structured dict consumed by the report/figures.
     """
     age = patient.female_age
+    requested_sperm_source = sperm_source
+    sperm_source = resolve_sperm_source(sperm_source)
     p_mii = esteves_p_euploid_per_mii(age, sperm_source)
 
     # ── 1. euploid blastocysts needed for pregnancy targets ────
-    # Per-euploid-blastocyst live-pregnancy probability:
+    # Per-euploid-blastocyst pregnancy probability proxy:
     # use the L2 per-transfer probability as the per-euploid
     # transfer success proxy (each euploid ~ one transfer).
-    p_transfer = float(res.get("p_per_transfer", 0.45))
-    p_transfer = min(max(p_transfer, 0.05), 0.95)
+    # Preserve genuine zero/one probabilities; do not invent a 5% floor.
+    p_transfer = res.get("p_per_transfer")
+    if p_transfer is not None:
+        p_transfer = float(p_transfer)
+        if not math.isfinite(p_transfer) or not 0 <= p_transfer <= 1:
+            raise ValueError("Invalid per-transfer pregnancy probability")
 
     def euploids_for_target(target_preg):
-        # 1-(1-p)^n >= target  ->  n >= ln(1-target)/ln(1-p)
-        if target_preg >= 1:
-            return None
-        n = math.log(1 - target_preg) / math.log(1 - p_transfer)
-        return int(math.ceil(n))
+        return transfers_for_pregnancy_target(p_transfer, target_preg)
 
     preg_targets = [0.50, 0.70, 0.90]
     euploid_for_preg = {
@@ -1597,7 +1648,9 @@ def esteves_banking_analysis(patient: PatientInput,
 
     return {
         "age":              age,
+        # The stratum actually used, plus what the caller asked for.
         "sperm_source":     sperm_source,
+        "sperm_source_requested": requested_sperm_source,
         "p_per_mii":        p_mii,
         "p_transfer_used":  p_transfer,
         "preg_targets":     preg_targets,
@@ -1740,7 +1793,8 @@ def run_pipeline_extended(patient: PatientInput,
                            max_attempts_curve: int = 6,
                            kpi_weight: float = KPI_WEIGHT,
                            sperm_source: str = "ejaculate",
-                           n: int = N_SIM) -> Dict:
+                           n: int = N_SIM,
+                           pgt: Optional[bool] = None) -> Dict:
     """
     Run the complete v6.0 pipeline:
       1. v5.3 base pipeline (FORTUNE + KPI ensemble, 3-level decomposition)
@@ -1750,7 +1804,8 @@ def run_pipeline_extended(patient: PatientInput,
       5. Per-attempt decay curve
     """
     # ── 1. v5.3 base pipeline ─────────────────────────────────
-    res = run_pipeline(patient, known=known, kpi_weight=kpi_weight, n=n)
+    res = run_pipeline(patient, known=known, kpi_weight=kpi_weight, n=n, pgt=pgt)
+    res['follicles_input'] = follicles
 
     # ── 2. NN final layer ─────────────────────────────────────
     nn_pred = stage8_nn_prediction(patient, res, nn_model,
@@ -1760,7 +1815,11 @@ def run_pipeline_extended(patient: PatientInput,
     res['nn_attempt_number'] = attempt_number
 
     # ── 3. NVSA adjustment ────────────────────────────────────
-    nvsa = apply_nvsa_to_distribution(nn_pred, res['sim_kpi_scores'])
+    # NVSA uses the same follicle-based KPI as the NN feature contract.
+    # L1's AMH-based KPI remains unchanged for L1 calculations.
+    nvsa_kpi = (nn_pred['features']['KPIScore'].to_numpy()
+                if 'features' in nn_pred else res['sim_kpi_scores'])
+    nvsa = apply_nvsa_to_distribution(nn_pred, nvsa_kpi)
     res['nn_nvsa'] = nvsa
 
     # ── 4. Bayesian posterior (covariate-dependent prior, v6.2) ──
@@ -2071,6 +2130,13 @@ def stage9_cluster_analysis(patient: PatientInput, res: Dict,
     cluster_probs = {c: float(np.mean(assignments == c)) for c in (0, 1, 2)}
     dominant = int(max(cluster_probs, key=cluster_probs.get))
 
+    scales=np.array([CLUSTER_FEATURE_POP_SD[name] for name in CLUSTER_FEATURE_NAMES])
+    cluster_details={}
+    for c in (0,1,2):
+        centre=np.array([CLUSTER_CENTROIDS[c][name] for name in CLUSTER_FEATURE_NAMES])
+        distance=np.sqrt(np.mean(((feats-centre)/scales)**2,axis=1))
+        cluster_details[c]={'distance_to_centroid':float(np.median(distance)),'typical_distance':1.0}
+
     # Synthetic cloud + PCA on combined data
     syn_pts, syn_labels = synthetic_cluster_cloud()
     combined = np.vstack([syn_pts, feats])
@@ -2080,6 +2146,7 @@ def stage9_cluster_analysis(patient: PatientInput, res: Dict,
         "assignments":       assignments,
         "cluster_probs":     cluster_probs,
         "dominant_cluster":  dominant,
+        "clusters": cluster_details,
         "synthetic_points":  syn_pts,
         "synthetic_labels":  syn_labels,
         "patient_features":  feats,
@@ -3105,7 +3172,7 @@ def generate_html(patient, res, image_paths):
 
 
 def save_pdf_report(patient, res, output_filename="ivf_report_v6_1.pdf"):
-    if path_to_wkhtmltopdf and not os.path.exists(path_to_wkhtmltopdf):
+    if path_to_wkhtmltopdf and not model_exists(path_to_wkhtmltopdf):
         raise FileNotFoundError(
             f"wkhtmltopdf not found at: {path_to_wkhtmltopdf}\n"
             f"Install from https://wkhtmltopdf.org/downloads.html and set the path."

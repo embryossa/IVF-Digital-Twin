@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 # Commercial use requires a separate license: see COMMERCIAL-LICENSE.md
 """
-IVF Digital Twin v7.0 — Клинический PDF-отчёт
+IVF Digital Twin v7.1 — Клинический PDF-отчёт
 Пастельный дизайн, читаемые графики, пригоден для печати.
 """
 
@@ -287,7 +287,7 @@ class _PageTemplate:
 
         canvas.setFont(FB, 9.5)
         canvas.setFillColor(C_NAVY)
-        canvas.drawString(MARGIN + 1.0*cm, h - 0.70*cm, "IVF Digital Twin v7.0")
+        canvas.drawString(MARGIN + 1.0*cm, h - 0.70*cm, "IVF Digital Twin v7.1")
 
         if self.patient_name:
             canvas.setFont(F, 8.5)
@@ -303,7 +303,7 @@ class _PageTemplate:
         canvas.setFont(F, 6.5)
         canvas.setFillColor(C_GREY)
         canvas.drawString(MARGIN, 0.34*cm,
-            "IVF Digital Twin v7.0  ·  from in vitro to in silico  ·  embryossa@gmail.com  ·  "
+            "IVF Digital Twin v7.1  ·  from in vitro to in silico  ·  embryossa@gmail.com  ·  "
             "Research prototype — not for standalone clinical use")
         canvas.drawRightString(w - MARGIN, 0.34*cm, f"Стр. {doc.page}")
         canvas.restoreState()
@@ -333,6 +333,9 @@ def generate_patient_report(
     w_gnn=0.35,            # вес GNN в ансамбле
     fig_gnn=None,          # Plotly-фигура: граф соседей
     befe_result=None,      # BEFEResult (L7) — байесовское слияние
+    clinical_probability=None,   # 7.1: итог (на перенос; 0 — перенос невозможен)
+    cycle_probability=None,      # 7.1: вероятность цикла, согласованная с итогом L7
+    no_transfer_confirmed=False, # 7.1: введённые результаты исключают перенос
 ) -> bytes:
 
     buf = io.BytesIO()
@@ -346,7 +349,7 @@ def generate_patient_report(
         leftMargin=MARGIN, rightMargin=MARGIN,
         topMargin=1.6*cm, bottomMargin=1.4*cm,
         title=f"IVF Digital Twin — {patient_name}",
-        author="IVF Digital Twin v7.0",
+        author="IVF Digital Twin v7.1",
     )
 
     def pct(v):
@@ -371,7 +374,7 @@ def generate_patient_report(
         logo_img = RLImage(logo, width=1.8*cm, height=1.8*cm)
         hdr = Table(
             [[logo_img,
-              [Paragraph("IVF Digital Twin v7.0", ST["cover_title"]),
+              [Paragraph("IVF Digital Twin v7.1", ST["cover_title"]),
                Paragraph("Индивидуальный клинический отчёт", ST["cover_sub"])]]],
             colWidths=[2.2*cm, PAGE_W - 2.2*cm]
         )
@@ -379,7 +382,7 @@ def generate_patient_report(
                                   ("LEFTPADDING",(0,0),(-1,-1),0)]))
         story.append(hdr)
     else:
-        story.append(Paragraph("IVF Digital Twin v7.0", ST["cover_title"]))
+        story.append(Paragraph("IVF Digital Twin v7.1", ST["cover_title"]))
         story.append(Paragraph("Индивидуальный клинический отчёт", ST["cover_sub"]))
 
     story.append(Spacer(1, 4))
@@ -432,7 +435,8 @@ def generate_patient_report(
 
     p_transfer = res.get("p_per_transfer", 0)
     p_viable   = res.get("p_cum_if_viable", 0)
-    p_cycle    = res.get("p_overall_cycle", 0)
+    p_cycle    = (cycle_probability if cycle_probability is not None
+                  else res.get("p_overall_cycle", 0))
     p_bayes    = post.get("mean", 0)
     kpi        = res.get("kpi_score_median", 0)
     ci_lo      = post.get("ci_low", 0)
@@ -455,10 +459,15 @@ def generate_patient_report(
     _gnn_sty  = _mstyle(p_gnn_ens) if p_gnn_ens is not None else ("mv", C_CARD_BLUE,  C_CARD_BORDER_BLUE)
 
     # Первая карточка — итоговая вероятность L7 (BEFE), как на странице.
-    if befe_result is not None:
-        _head_val = pct(befe_result.posterior)
+    if no_transfer_confirmed:
+        _head_val = pct(0.0)
+        _head_lbl = "P(беременность)\nтекущий цикл"
+        _head_sty = _mstyle(0.0)
+    elif befe_result is not None:
+        _head_p   = clinical_probability if clinical_probability is not None else befe_result.posterior
+        _head_val = pct(_head_p)
         _head_lbl = "P(беременность)\nBEFE (L7)"
-        _head_sty = _mstyle(befe_result.posterior)
+        _head_sty = _mstyle(_head_p)
     else:
         _head_val = pct(p_transfer)
         _head_lbl = "P(беременность)\nна перенос"
@@ -481,10 +490,12 @@ def generate_patient_report(
     story.append(Spacer(1, 6))
     ci_parts = []
     if befe_result is not None:
-        _ci_src = "Beta-posterior" if getattr(befe_result, "ci_source", "") == "beta-posterior" else "logit"
+        _ci_src = ("диапазон неопределённости модели"
+                   if getattr(befe_result, "ci_source", "") == "scenario-spread+model-uncertainty"
+                   else "95% ДИ logit")
         ci_parts.append(
             f"Итоговая вероятность L7 (BEFE): <b>{pct(befe_result.posterior)}</b>  "
-            f"(95% ДИ {_ci_src}: {pct(befe_result.ci_low)} – {pct(befe_result.ci_high)}  ·  "
+            f"({_ci_src}: {pct(befe_result.ci_low)} – {pct(befe_result.ci_high)}  ·  "
             f"надёжность {befe_result.reliability}/100)")
     if p_kat_raw is not None and ci_kat[0] is not None:
         ci_parts.append(f"KAT 95% CI: <b>{pct(ci_kat[0])} – {pct(ci_kat[1])}</b>")
@@ -726,9 +737,7 @@ def generate_patient_report(
 
         eb_rows = [
             ("P(эуплоид) на один MII-ооцит", pct(eb.get("p_per_mii",0))),
-            ("Частота оплодотворения",        pct(eb.get("fert_r",0))),
-            ("Частота бластуляции (D5)",      pct(eb.get("blast_r",0))),
-            ("Частота эуплоидии",             pct(eb.get("eupl_r",0))),
+            ("Страта Esteves (источник спермы)", str(eb.get("sperm_source", "—"))),
         ]
         if eb.get("patient_mii_median"):
             eb_rows.append(("MII медиана (данная пациентка)",
@@ -949,7 +958,7 @@ def generate_patient_report(
     ]
     if befe_result is not None:
         summary.append(("P(беременность) · BEFE (L7)",
-                        f"{pct(befe_result.posterior)}  (95% ДИ: "
+                        f"{pct(befe_result.posterior)}  (диапазон: "
                         f"{pct(befe_result.ci_low)}\u2013{pct(befe_result.ci_high)})"))
         summary.append(("  \u21b3 Надёжность",
                         f"{befe_result.reliability}/100 ({befe_result.reliability_band})"))
@@ -976,7 +985,7 @@ def generate_patient_report(
     story.append(HRFlowable(width="100%", thickness=0.5, color=C_BORDER,
                              spaceBefore=4, spaceAfter=6))
     story.append(Paragraph(
-        "Данный отчёт сформирован системой IVF Digital Twin v7.0 и предназначен "
+        "Данный отчёт сформирован системой IVF Digital Twin v7.1 и предназначен "
         "для использования врачом-репродуктологом в качестве вспомогательного "
         "инструмента. Не является самостоятельным клиническим заключением.",
         ST["note"]

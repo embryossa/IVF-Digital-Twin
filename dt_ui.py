@@ -688,7 +688,7 @@ def befe_card_header(posterior_pct: float, ci_low_pct: float, ci_high_pct: float
             <div style="font-size:12px;color:#5A6B7B;font-weight:500">
               Итоговая P(беременность)</div>
             <div style="font-size:13px;color:#2471A3;font-weight:600">
-              Исторический коридор клиники: {ci_low_pct:.0f}% – {ci_high_pct:.0f}%</div>
+              Диапазон неопределённости модели: {ci_low_pct:.0f}% – {ci_high_pct:.0f}%</div>
           </div>
         </div>""",
         unsafe_allow_html=True,
@@ -704,7 +704,7 @@ TAB_META = {
     "pregnancy": ("L2", "Беременность", "FORTUNE · KPI · ансамбль на перенос", "L2"),
     "cluster":   ("L4", "Кластер", "Ближайший центроид · 18D z-пространство", "L4"),
     "bayes":     ("L3", "Байес + попытки", "Beta-Binomial posterior · коэффициент убывания", "L3"),
-    "risks":     ("", "Риски", "ССЯГ · пустой цикл · ZINB-распределение", "L1"),
+    "risks":     ("", "Риски", "ССЯГ · пустой цикл · NB-распределение", "L1"),
     "banking":   ("", "Банкинг", "Модуль Esteves · планирование накопления эуплоидов", ""),
     "diffusion": ("L5", "Diffusion", "CSDI Hybrid v3 · ~15 000 циклов · конформные PI", "L5"),
     "gat":       ("L6", "GAT Graph", "Graph Attention Transformer · граф клинических соседей", "L6"),

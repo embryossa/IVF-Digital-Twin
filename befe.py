@@ -177,10 +177,58 @@ def fit_gaussian(train_matrix: np.ndarray, reg: float = 1e-3) -> Tuple[np.ndarra
     Use OFFLINE on the training cohort; store the returned arrays.
     """
     X = np.asarray(train_matrix, dtype=float)
+    if X.ndim != 2 or len(X)<2 or X.shape[1]<1 or not np.isfinite(X).all():
+        raise ValueError('OOD requires a finite two-dimensional cohort')
+    if not np.isfinite(reg) or reg <= 0:raise ValueError('Invalid OOD regularisation')
     mu = X.mean(axis=0)
+    # A cohort column with less spread than the regulariser carries no
+    # information: after inversion its axis dominates every Mahalanobis
+    # distance, so each real patient scores as out-of-distribution. Refuse the
+    # fit here rather than ship a detector that fires on 100% of cases.
+    flat = [int(i) for i in np.flatnonzero(X.var(axis=0) <= reg)]
+    if flat:
+        raise ValueError(
+            f"OOD subspace has no variation in dimension(s) {flat}: the "
+            "training cohort column is constant or near-constant. Fix the "
+            "column mapping or drop the feature.")
     cov = np.cov(X, rowvar=False)
     cov = np.atleast_2d(cov) + reg * np.eye(X.shape[1])
     return mu, np.linalg.pinv(cov)
+
+# Smallest per-dimension coefficient of variation a fitted OOD subspace may
+# have. A cohort column that was constant (a placeholder, a default, a missing
+# export column) collapses to the regularisation floor; the resulting inverse
+# covariance is ~1e4 on that axis, so every real patient scores as OOD and the
+# detector silently deflates the empirical evidence to nothing. Refuse such a
+# fit rather than ship a detector that fires on 100% of cases.
+OOD_MIN_REL_SD = 0.01
+
+
+def degenerate_ood_dimensions(mu, cov_inv) -> list:
+    """Return the indices of collapsed dimensions in a fitted subspace.
+
+    A dimension is collapsed when its implied standard deviation is negligible
+    relative to its own mean, i.e. the training cohort carried no variation
+    there. Returns [] for a usable subspace.
+    """
+    mu = np.asarray(mu, dtype=float)
+    cov_inv = np.asarray(cov_inv, dtype=float)
+    invalid=list(range(max(1,mu.size)))
+    if mu.ndim != 1 or mu.size == 0 or cov_inv.shape != (mu.size, mu.size):
+        return invalid
+    if not np.isfinite(mu).all() or not np.isfinite(cov_inv).all():return invalid
+    if not np.allclose(cov_inv,cov_inv.T,rtol=1e-7,atol=1e-10):return invalid
+    try:
+        np.linalg.cholesky(cov_inv)
+        cov = np.linalg.inv(cov_inv)
+    except np.linalg.LinAlgError:
+        return invalid
+    sd = np.sqrt(np.diag(cov))
+    scale = np.maximum(np.abs(mu), _EPS)
+    # A constant zero-mean column is missed by a relative-SD check alone.
+    collapsed=(np.diag(cov)<=1.001e-3) | (sd / scale < OOD_MIN_REL_SD)
+    return [int(i) for i in np.flatnonzero(collapsed)]
+
 
 def _ood_threshold(df: int) -> float:
     try:
@@ -196,13 +244,15 @@ class _Subspace:
     mean: Optional[np.ndarray] = None
     cov_inv: Optional[np.ndarray] = None
 
+    threshold: Optional[float] = None
+
     def score(self) -> Tuple[bool, float, float]:
         """Return (is_ood, ratio, distance). ratio = d^2 / threshold; >1 => OOD."""
         if self.features is None or self.mean is None or self.cov_inv is None:
             return False, 0.0, 0.0
         diff = np.asarray(self.features, float) - np.asarray(self.mean, float)
         d2 = float(diff.T @ self.cov_inv @ diff)
-        ratio = d2 / max(_ood_threshold(diff.shape[0]), _EPS)
+        ratio = d2 / max(self.threshold if self.threshold is not None else _ood_threshold(diff.shape[0]), _EPS)
         return ratio > 1.0, ratio, math.sqrt(max(d2, 0.0))
 
 @dataclass
@@ -265,6 +315,19 @@ class BEFEResult:
     ood_note: str
     evidence_weights: dict           # normalised contribution within Level 1
     raw_experts: dict
+    # Uncertainty-range decomposition (logit SD), filled by befe_app. The
+    # precision-pool interval is kept for technical inspection only.
+    range_scenario_sd: float = float('nan')     # spread over the cycle's scenarios with a transfer
+    range_model_sd: float = float('nan')        # uncertainty of the fused estimate across L1, KAT, GAT
+    range_hetero_sd: float = float('nan')       # between-source heterogeneity (logit SD, 0 = sources agree)
+    range_ood_inflation: float = 1.0
+    pool_ci_low: float = float('nan')
+    pool_ci_high: float = float('nan')
+    # Precisions actually used by the fusion (after trust and OOD deflation).
+    # The uncertainty range is built from them, so it follows the evidence.
+    tau_prior: float = float('nan')
+    tau_evidence: dict = field(default_factory=dict)
+    tau_post: float = float('nan')
 
 
 # --------------------------------------------------------------------------- #
@@ -404,12 +467,15 @@ class BayesianEvidenceFusionEngine:
             prior_pull=tau_prior / tau_post, evidence_pull=tau_emp / tau_post,
             reliability=reliability, reliability_band=rel_band, consensus=consensus,
             n_eff=(graph.n_eff if graph.available else float('nan')),
-            diffusion_agreement=diffusion.agreement_score,
+            # No agreement is claimed when L5 did not enter the fusion.
+            diffusion_agreement=(diffusion.agreement_score if diffusion.available else float('nan')),
             diffusion_available=diffusion.available, graph_available=graph.available,
             cluster_label=cluster.cluster_label or f"cluster {cluster.cluster_id}",
             ood_clinical=ood_c, ood_embryology=ood_e, ood_final=ood_final,
             ood_note=self._ood_note(ood_c, ood_e),
             evidence_weights=ev_weights, raw_experts={"P_L1": experts.P_L1, **p_emp},
+            tau_prior=tau_prior, tau_post=tau_post,
+            tau_evidence={k: v * clinical_mult for k, v in taus.items()},
         )
 
     # -- physician-facing report ------------------------------------------ #
@@ -488,3 +554,14 @@ if __name__ == "__main__":
     )
     print(engine.format_report(res))
     print("\nLevel-1 evidence weights:", res.evidence_weights)
+
+
+def embryo_features_v3(okk,mii,pn2,blast,shrink_mu,shrink_kappa):
+    """Empirical-Bayes count ratios matching the supplied OOD schema 3."""
+    try:vals=np.array([okk,mii,pn2,blast],dtype=float)
+    except (TypeError,ValueError):return None
+    if not np.isfinite(vals).all() or min(vals)<0 or not vals[0]>=vals[1]>=vals[2]>=vals[3]:return None
+    mu=np.asarray(shrink_mu);kappa=np.asarray(shrink_kappa)
+    if mu.shape!=(3,) or kappa.shape!=(3,) or not np.isfinite(mu).all() or not np.isfinite(kappa).all() or (mu<=0).any() or (mu>=1).any() or (kappa<=0).any():return None
+    ratios=(vals[1:]+mu*kappa)/(vals[:-1]+kappa)
+    return np.r_[np.log1p(vals[0]),np.log(ratios/(1-ratios))]

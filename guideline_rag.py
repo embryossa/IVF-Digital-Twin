@@ -41,7 +41,8 @@ _PACK_PATH = os.environ.get(
 )
 
 # Reuse the same Ollama host convention as llm_consultant.py.
-_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+from src.local_network import local_ollama_host
+_OLLAMA_HOST = local_ollama_host(os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"))
 _EMBED_MODEL = os.environ.get("DT_EMBED_MODEL", "nomic-embed-text")
 _EMBED_TIMEOUT = (3, int(os.environ.get("DT_EMBED_TIMEOUT", 30)))
 
@@ -152,7 +153,9 @@ def _embed_ollama(texts: List[str]) -> Optional[List[List[float]]]:
     """Embed texts via Ollama /api/embed. Returns None on any failure."""
     try:
         import requests
-        r = requests.post(
+        session=requests.Session()
+        session.trust_env=False
+        r = session.post(
             f"{_OLLAMA_HOST}/api/embed",
             json={"model": _EMBED_MODEL, "input": texts},
             timeout=_EMBED_TIMEOUT,

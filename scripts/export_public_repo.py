@@ -40,6 +40,13 @@ INCLUDE = [
     "src/embryo_tabddpm.py",
     "src/gnn_predictor.py",
     "src/pdf_report.py",
+    # 7.1: shared L1 parameters, model loader, loopback guard
+    "src/embryology.py",
+    "src/modelio.py",
+    "src/local_network.py",
+    # 7.1 data flow for app.py and the clinical headline contract
+    "dt_bridge.py",
+    "presentation.py",
     # BEFE — Bayesian Evidence Fusion Engine (L7)
     "befe.py",
     "befe_app.py",

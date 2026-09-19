@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 # Commercial use requires a separate license: see COMMERCIAL-LICENSE.md
 """
-IVF Digital Twin v7.0 — Streamlit Clinical Application
+IVF Digital Twin v7.1 — Streamlit Clinical Application
 Запуск: streamlit run app.py
 
 Офлайн-лицензирование (RSA + AES-256):
@@ -328,7 +328,7 @@ def _render_license_gate():
         if os.path.exists(logo_path):
             st.image(logo_path, width=90)
 
-        st.markdown("## IVF Digital Twin v7.0")
+        st.markdown("## IVF Digital Twin v7.1")
         st.markdown("### Активация лицензии")
         st.markdown("---")
 
@@ -479,29 +479,16 @@ if _clinic and _expires:
 _src_dir = os.path.join(_SOURCE_DIR, "src")
 sys.path.insert(0, _src_dir)
 
-_src_py  = os.path.join(_src_dir, "ivf_digital_twin.py")
-_src_pyd = any(
-    f.startswith("ivf_digital_twin") and f.endswith(".pyd")
-    for f in os.listdir(_src_dir)
-) if os.path.isdir(_src_dir) else False
-
-if _src_pyd:
-    # Скомпилированный бинарный модуль — просто импортируем
+# 7.1: обычный импорт (.py или .pyd). Тот же объект модуля использует ivf_core,
+# поэтому PatientInput/KnownValues интерфейса и ядра — одни и те же классы.
+try:
     import ivf_digital_twin as _ivf_mod
-    globals().update({k: getattr(_ivf_mod, k)
-                      for k in dir(_ivf_mod) if not k.startswith("__")})
-elif os.path.exists(_src_py):
-    # Обычный .py — выполняем через exec (совместимость)
-    _g = globals()
-    _orig_file = _g.get("__file__", "")
-    _g["__file__"] = _src_py
-    _pipeline_code = open(_src_py, encoding="utf-8").read()
-    _pipeline_code = _pipeline_code.replace("if __name__ ==", "if False and __name__ ==")
-    exec(compile(_pipeline_code, _src_py, "exec"), _g)
-    _g["__file__"] = _orig_file
-else:
-    st.error("Критическая ошибка: ivf_digital_twin не найден (ни .py ни .pyd)")
+except Exception as _pipeline_exc:
+    st.error(f"Критическая ошибка: ivf_digital_twin не загружен ({_pipeline_exc})")
     st.stop()
+globals().update({k: getattr(_ivf_mod, k)
+                  for k in dir(_ivf_mod) if not k.startswith("__")})
+import dt_bridge as _dt_bridge
 
 # ── подключаем CSDI Hybrid v3 (L5) ───────────────────────────
 CSDI_AVAILABLE   = False
@@ -535,50 +522,14 @@ try:
 except ImportError as _trp_ie:
     _TRP_ERROR = str(_trp_ie)
 
-# Проверяем наличие скомпилированного .pyd для CSDI
-_csdi_pyd = any(
-    f.startswith("embryo_csdi_v3") and f.endswith(".pyd")
-    for f in os.listdir(_src_dir)
-) if os.path.isdir(_src_dir) else False
-
-_csdi_candidates = [
-    os.path.join(_src_dir, "embryo_csdi_v3.py"),
-    os.path.join(_SOURCE_DIR, "embryo_csdi_v3.py"),
-]
-
-if _csdi_pyd:
-    try:
-        import embryo_csdi_v3 as _csdi_mod
-        globals().update({k: getattr(_csdi_mod, k)
-                          for k in dir(_csdi_mod) if not k.startswith("__")})
-        CSDI_AVAILABLE    = True
-        _CSDI_CLASS_READY = True
-    except Exception as _e:
-        CSDI_LOAD_ERROR = str(_e)
-else:
-    for _cf in _csdi_candidates:
-        if os.path.exists(_cf):
-            _g2 = globals()
-            _orig_file2 = _g2.get("__file__", "")
-            try:
-                _csdi_code = open(_cf, encoding="utf-8").read()
-                _csdi_code = _csdi_code.replace("if __name__ ==", "if False and __name__ ==")
-                _g2["__file__"] = _cf
-                exec(compile(_csdi_code, _cf, "exec"), _g2)
-                CSDI_AVAILABLE    = True
-                _CSDI_CLASS_READY = True
-            except Exception as _e:
-                CSDI_LOAD_ERROR = str(_e)
-            finally:
-                _g2["__file__"] = _orig_file2
-            break
-
-# Директория с обученной моделью
-_CSDI_MODEL_DIRS = [
-    os.path.join(_SOURCE_DIR, "models", "embryo_v3_model"),
-    os.path.join(_SOURCE_DIR, "embryo_v3_model"),
-    "embryo_v3_model",
-]
+# CSDI импортируется как отдельный модуль: выполнение его кода в globals()
+# перезаписывало константы и функции ядра (исправлено в 7.1, см. ivf_core).
+# Загрузка модели и запуск CSDI — в ivf_core (L5 с проверкой применимости).
+try:
+    from ivf_core import _CSDI_CLASS_READY, CSDI_LOAD_ERROR
+    CSDI_AVAILABLE = _CSDI_CLASS_READY
+except Exception as _e:
+    CSDI_LOAD_ERROR = str(_e)
 
 # ── CSS ───────────────────────────────────────────────────────
 if _UI_OK:
@@ -825,7 +776,9 @@ def _get_gnn_bundle():
     """Загружает GNN один раз на сессию."""
     if not _GNN_IMPORT_OK:
         return {'available': False, 'error': _GNN_LOAD_ERROR}
-    return _load_gnn_model(base_dir=_BASE_DIR)
+    # Тот же экземпляр, что использует расчёт ivf_core.
+    from ivf_core import load_gnn_bundle
+    return load_gnn_bundle()
 
 _gnn_bundle = _get_gnn_bundle()
 st.sidebar.image(os.path.join(_SOURCE_DIR, "logo22.png"), width=80)
@@ -1003,7 +956,9 @@ _model_status_box.markdown("**KAT · KAN + FT-Transformer**")
 
 @st.cache_resource(show_spinner="Загрузка нейросетевых моделей...")
 def get_nn_model():
-    return load_nn_ensemble()
+    # Тот же экземпляр, что использует расчёт ivf_core.
+    from ivf_core import load_nn_model
+    return load_nn_model()
 
 nn_model = get_nn_model()
 
@@ -1040,44 +995,13 @@ CSDI_MODEL_LOAD_ERROR = ""
 
 @st.cache_resource(show_spinner="Загрузка CSDI Hybrid v3...")
 def get_csdi_model():
-    global CSDI_MODEL_LOAD_ERROR
     if not _CSDI_CLASS_READY:
         return None
-    for _d in _CSDI_MODEL_DIRS:
-        _cfg = os.path.join(_d, "config.json")
-        # Accept either plain .pt or encrypted .pt.enc
-        _wts_plain = os.path.join(_d, "csdi_weights.pt")
-        _wts_enc   = os.path.join(_d, "csdi_weights.pt.enc")
-        if os.path.isfile(_cfg) and (os.path.isfile(_wts_plain) or os.path.isfile(_wts_enc)):
-            try:
-                return EmbryoHybridV3.load(_d)
-            except Exception as _e:
-                CSDI_MODEL_LOAD_ERROR = str(_e)
-                return None
-    return None
+    # Тот же экземпляр, что использует расчёт ivf_core (CSDI запускается там).
+    from ivf_core import load_csdi_model
+    return load_csdi_model()
 
 csdi_model = get_csdi_model()
-
-# ── CSDI runner — на уровне модуля, не внутри with-блока.
-# st.cache_data не работает корректно когда функция переопределяется
-# при каждом рендере и захватывает PyTorch-модель из closure:
-# Streamlit не может её хешировать и возвращает первый результат навсегда.
-# session_state решает проблему: пересчёт только при реальном изменении
-# входных данных пациента (сравнение кортежа из 7 чисел).
-def _csdi_run_and_cache(patient: dict, key: tuple):
-    """Запускает mc_sample только если ключ изменился.
-    Результат хранится в st.session_state — живёт в рамках сессии.
-    """
-    if (st.session_state.get("_csdi_last_key") != key
-            or "csdi_result" not in st.session_state):
-        _csdi_spinner = ("Generating CSDI trajectories (DDIM, 50 steps)…"
-                         if _LANG == "English" else
-                         "Генерация CSDI-траекторий (DDIM, 50 шагов)…")
-        with st.spinner(_csdi_spinner):
-            result = csdi_model.mc_sample(patient, n_samples=1000)
-        st.session_state["csdi_result"]    = result
-        st.session_state["_csdi_last_key"] = key
-    return st.session_state["csdi_result"]
 
 
 if csdi_model is not None:
@@ -1145,7 +1069,7 @@ _disclaimer_text = (
 st.markdown(f"""
 <div class="disclaimer">
 {_disclaimer_text}
-<br>IVF Digital Twin v7.0 · <i>from in vitro to in silico</i>
+<br>IVF Digital Twin v7.1 · <i>from in vitro to in silico</i>
 </div>
 """, unsafe_allow_html=True)
 
@@ -1165,14 +1089,14 @@ if not run_btn:
         with st.expander(_t("about_system")):
             if _LANG == "English":
                 st.markdown("""
-        **IVF Digital Twin v7.0** is an integrated IVF outcome-prediction
+        **IVF Digital Twin v7.1** is an integrated IVF outcome-prediction
         system combining seven independent assessment layers.
 
         *from in vitro to in silico.*
 
         | Layer | Method |
         |---|---|
-        | L1 Stochastic pipeline | ZINB + binomial filters (S1–S6b) |
+        | L1 Stochastic pipeline | NB (log link) + beta-binomial filters (S1–S6b) |
         | L2 Transfer ensemble | FORTUNE + KPIScore (logit weighting) |
         | L3 Neural network | KAN + FT-Transformer + Venn–Abers (KAT) |
         | L4 Response cluster | Nearest 18D centroid |
@@ -1188,14 +1112,14 @@ if not run_btn:
         """)
             else:
                 st.markdown("""
-        **IVF Digital Twin v7.0** — интегрированная система прогнозирования
+        **IVF Digital Twin v7.1** — интегрированная система прогнозирования
         исходов ЭКО, объединяющая 7 независимых слоёв оценки.
 
         *from in vitro to in silico.*
 
         | Слой | Метод |
         |---|---|
-        | L1 Стохастический pipeline | ZINB + биномиальные фильтры (S1–S6b) |
+        | L1 Стохастический pipeline | NB (log-связь) + бета-биномиальные фильтры (S1–S6b) |
         | L2 Ансамбль на перенос | FORTUNE + KPIScore (логит-взвешивание) |
         | L3 Нейросеть | KAN + FT-Transformer + Venn-Abers (KAT) |
         | L4 Кластер | Ближайший центроид 18D |
@@ -1217,24 +1141,30 @@ if not run_btn:
         sperm_source = st.session_state.get("_pdf_sperm", "")
 
 # ── РАСЧЁТ ───────────────────────────────────────────────────
+# 7.1: один поток данных для всех выводов (экран, PDF, аналитика):
+# ivf_core (L1–L6) → BEFE L7 → клиническая сводка → вероятность цикла.
+_reliability_limits = {"high": int(_rel_high_threshold),
+                       "moderate": int(_rel_moderate_threshold)}
 if run_btn:
-    patient = PatientInput(female_age=float(age), amh=float(amh),
-                           afc=int(afc), bmi=float(bmi))
-
     _mc_spinner = (f"Running {n_sim} Monte Carlo iterations…" if _LANG == "English"
                    else f"Выполняется {n_sim} итераций Monte Carlo…")
     with st.spinner(_mc_spinner):
-        np.random.seed(42)
-        res = run_pipeline_extended(
-            patient, known=known,
-            attempt_number=int(attempt),
-            follicles=follicles,
-            nn_model=nn_model,
-            clinic_real_successes=clinic_s,
-            clinic_real_trials=clinic_t,
-            max_attempts_curve=6,
-            n=n_sim,
+        _dt71 = _dt_bridge.compute(
+            {
+                "age": float(age), "amh": float(amh), "afc": int(afc),
+                "bmi": float(bmi), "attempt": int(attempt),
+                "follicles": follicles, "sperm_source": sperm_source,
+                "known_okk": known.okk, "known_mii": known.mii,
+                "known_pn2": known.pn2, "known_blasts": known.blasts,
+                "known_good": known.good, "known_euploid": known.euploid,
+                "n_sim": int(n_sim), "seed": 42,
+            },
+            clinic_successes=clinic_s, clinic_trials=clinic_t,
+            reliability=_reliability_limits,
         )
+        res = _dt71["res"]
+        known = _dt71["known"]
+        st.session_state["_dt71"]        = _dt71
         st.session_state["_pdf_res"]     = res
         st.session_state["_pdf_known"]   = known
         st.session_state["_pdf_age"]     = float(age)
@@ -1243,9 +1173,10 @@ if run_btn:
         st.session_state["_pdf_bmi"]     = float(bmi)
         st.session_state["_pdf_attempt"] = int(attempt)
         st.session_state["_pdf_sperm"]   = sperm_source
-    _nn_s = res.get('nn_prediction', {})
+    # L3 KAT на сценариях с переносом (res_transfer); None без весов KAT.
+    _nn_s = _dt71["res_transfer"].get('nn_prediction', {}) if _dt71["nn_available"] else {}
     _nv_s = res.get('nn_nvsa', {})
-    st.session_state["_pdf_p_kat_raw"] = _nn_s.get('base_prob_mean')
+    st.session_state["_pdf_p_kat_raw"] = _dt71["p_kat_raw"]
     st.session_state["_pdf_p_nvsa"]    = _nv_s.get('adjusted_mean')
     st.session_state["_pdf_ci_kat"]    = _nn_s.get('base_prob_ci',  (None, None))
     st.session_state["_pdf_ci_nvsa"]   = _nv_s.get('adjusted_ci',   (None, None))
@@ -1255,111 +1186,16 @@ else:
     known        = st.session_state.get("_pdf_known", {})
     sperm_source = st.session_state.get("_pdf_sperm", "")
 
-# ── BANKING MODULE (Esteves model) ───────────────────────────
-def _compute_esteves_banking(patient_age, sperm_src, res_pipeline):
-    """
-    Esteves et al. model: probability of euploid blastocyst per MII oocyte.
-    Combines: fertilisation × D5-blast × euploidy (age + sperm dependent).
+_dt71 = st.session_state["_dt71"]
+# Порог надёжности из боковой панели меняет только словесную категорию.
+if _dt71["fusion"] is not None:
+    _dt71["fusion"].reliability_band = _dt_bridge.reliability_band(
+        _dt71["fusion"].reliability, _reliability_limits["high"],
+        _reliability_limits["moderate"])
 
-    Sources:
-      Fertilisation by sperm source: Esteves 2022, Palermo 2022
-      D5 blastulation: Romanski 2022
-      Euploidy by age: Franasiak 2014 + Armstrong 2023
-    """
-    from scipy.stats import binom as _binom
-
-    # ── Fertilisation rate by sperm source ──────────────────
-    fert_by_source = {
-        "ejaculate":       0.76,
-        "testicular_NOA":  0.56,
-        "testicular_OA":   0.68,
-        "epididymal":      0.66,
-    }
-    fert_r = fert_by_source.get(sperm_src, 0.76)
-
-    # ── D5 blastulation rate (age-adjusted) ─────────────────
-    if patient_age < 35:
-        blast_r = 0.48
-    elif patient_age < 38:
-        blast_r = 0.44
-    elif patient_age < 41:
-        blast_r = 0.38
-    else:
-        blast_r = 0.30
-
-    # ── Euploidy rate by age (Franasiak 2014) ───────────────
-    eupl_table = {
-        (0,  35): 0.68,
-        (35, 37): 0.57,
-        (37, 39): 0.48,
-        (39, 41): 0.38,
-        (41, 43): 0.29,
-        (43, 99): 0.18,
-    }
-    eupl_r = 0.30
-    for (lo, hi), v in eupl_table.items():
-        if lo <= patient_age < hi:
-            eupl_r = v
-            break
-
-    # p per MII = fertilisation × blastulation × euploidy
-    p_per_mii = fert_r * blast_r * eupl_r
-
-    # ── Forward table ────────────────────────────────────────
-    mii_median = int(res_pipeline.get('mii_med', 0))
-    forward = None
-    if mii_median > 0:
-        dist = [_binom.pmf(k, mii_median, p_per_mii) for k in range(mii_median+1)]
-        mean_e  = mii_median * p_per_mii
-        med_e   = float(_binom.ppf(0.50, mii_median, p_per_mii))
-        forward = {"mean": mean_e, "median": med_e, "pmf": dist}
-
-    # ── How many euploid needed for pregnancy target ─────────
-    # Uses cumulative transfer model: P(preg|k_euploid) = 1-(1-p_xfer)^k
-    p_xfer = float(res_pipeline.get('p_per_transfer', 0.35))
-    euploid_for_preg = {}
-    for target_p in [0.50, 0.70, 0.90]:
-        if p_xfer <= 0:
-            euploid_for_preg[target_p] = None
-            continue
-        import math as _math
-        k = _math.ceil(_math.log(1 - target_p) / _math.log(1 - min(p_xfer, 0.9999)))
-        euploid_for_preg[target_p] = max(1, k)
-
-    # ── Inverse table: MII needed for k euploid at confidence ──
-    k_targets   = [1, 2, 3, 4, 5]
-    confidences = [0.70, 0.80, 0.90]
-    mii_table   = {}
-    for k in k_targets:
-        mii_table[k] = {}
-        for cf in confidences:
-            found = None
-            for n in range(k, 501):
-                if 1 - _binom.cdf(k - 1, n, p_per_mii) >= cf:
-                    found = n
-                    break
-            mii_table[k][cf] = found
-
-    return {
-        "p_per_mii":         p_per_mii,
-        "age":               patient_age,
-        "sperm_source":      sperm_src,
-        "fert_r":            fert_r,
-        "blast_r":           blast_r,
-        "eupl_r":            eupl_r,
-        "patient_mii_median":mii_median if mii_median > 0 else None,
-        "forward_at_median": forward,
-        "euploid_for_preg":  euploid_for_preg,
-        "k_targets":         k_targets,
-        "confidences":       confidences,
-        "mii_table":         mii_table,
-    }
-
-if run_btn:
-    _eb = _compute_esteves_banking(float(age), sperm_source, res)
-    st.session_state["_pdf_eb"] = _eb
-else:
-    _eb = st.session_state.get("_pdf_eb")
+# ── BANKING MODULE (Esteves model, 7.1: esteves_banking_analysis ядра) ─────
+_eb = _dt71["eb"]
+st.session_state["_pdf_eb"] = _eb
 
 # ── БЛОК РЕЗУЛЬТАТОВ ─────────────────────────────────────────
 st.markdown("---")
@@ -1370,49 +1206,33 @@ post = res['posterior']
 dom  = ca['dominant_cluster']
 
 # ── Ключевые метрики считаются ниже, после BEFE/GAT, и выводятся единой карточкой.
-# KAT raw (чистый выход нейросети)
-_nn_pred = res.get('nn_prediction', {})
+# L3 KAT — из ядра 7.1: среднее по сценариям с переносом; None без весов KAT
+# (тогда nn_prediction содержит FORTUNE+KPI, т.е. сам приор L1).
+_nn_pred = _dt71["res_transfer"].get('nn_prediction', {}) if _dt71["nn_available"] else {}
 _nn_nvsa = res.get('nn_nvsa', {})
-_p_kat_raw  = _nn_pred.get('base_prob_mean', None)
+_p_kat_raw  = _dt71["p_kat_raw"]
 _p_nvsa     = _nn_nvsa.get('adjusted_mean',  None)
 _ci_kat     = _nn_pred.get('base_prob_ci',   (None, None))
 _ci_nvsa    = _nn_nvsa.get('adjusted_ci',    (None, None))
 
-# ── GNN / GAT Ансамбль ────────────────────────────────────────
-_gnn_result = {'available': False, 'gnn_prob': None, 'ensemble_prob': None, 'w_gnn': 0.35}
-if _gnn_bundle.get('available') and run_btn:
+# ── GNN / GAT Ансамбль (L6 посчитан ядром на профиле переноса) ─────────────
+_gnn_result = _dt71["gnn_result"]
+st.session_state['_gnn_result'] = _gnn_result
+if run_btn and _gnn_result.get('gnn_prob') is not None:
+    # Строим фигуру для PDF сразу после инференса
     try:
-        _gnn_feats = _build_gnn_features(
-            age       = float(age),
-            afc       = int(afc),
-            attempt   = int(attempt),
-            res       = res,
-            known     = known,
-            p_kat_raw = _p_kat_raw,
+        _gnn_fig = _build_gnn_figure(
+            _gnn_result,
+            gnn_prob      = _gnn_result.get('gnn_prob'),
+            ensemble_prob = _gnn_result.get('ensemble_prob'),
         )
-        _gnn_result = _predict_gnn(_gnn_bundle, _gnn_feats, prai_score=_p_kat_raw)
-        st.session_state['_gnn_result'] = _gnn_result
-        # Строим фигуру для PDF сразу после инференса
-        try:
-            _gnn_fig = _build_gnn_figure(
-                _gnn_result,
-                gnn_prob      = _gnn_result.get('gnn_prob'),
-                ensemble_prob = _gnn_result.get('ensemble_prob'),
-            )
-            _gnn_fig = _apply_gnn_style(_gnn_fig)
-            st.session_state['_pdf_fig_gnn'] = _gnn_fig
-        except Exception:
-            st.session_state['_pdf_fig_gnn'] = None
-    except Exception as _gnn_exc:
-        _gnn_result = {'available': False, 'error': str(_gnn_exc),
-                       'gnn_prob': None, 'ensemble_prob': None, 'w_gnn': 0.35}
-elif not run_btn:
-    _gnn_result = st.session_state.get('_gnn_result',
-                  {'available': False, 'gnn_prob': None,
-                   'ensemble_prob': None, 'w_gnn': 0.35})
+        _gnn_fig = _apply_gnn_style(_gnn_fig)
+        st.session_state['_pdf_fig_gnn'] = _gnn_fig
+    except Exception:
+        st.session_state['_pdf_fig_gnn'] = None
 
-_p_gnn_ens  = _gnn_result.get('ensemble_prob')   # итоговый скор для отображения
-_p_gnn_raw  = _gnn_result.get('gnn_prob')
+_p_gnn_ens  = _dt71["p_gnn_ens"]   # итоговый скор для отображения
+_p_gnn_raw  = _dt71["p_gnn_raw"]
 _w_gnn      = _gnn_result.get('w_gnn', 0.35)
 
 # Сохраняем в session_state для PDF
@@ -1420,118 +1240,26 @@ st.session_state['_pdf_p_gnn_ens'] = _p_gnn_ens
 st.session_state['_pdf_p_gnn_raw'] = _p_gnn_raw
 st.session_state['_pdf_w_gnn']     = _w_gnn
 
-# ── CSDI выполняется как часть общего расчёта, а не при открытии вкладки ──
-# Имена признаков ниже — неизменяемый контракт модели; UI-подписи переводятся
-# отдельно и не влияют на вход CSDI.
-if csdi_model is not None:
-    try:
-        _foll_count = follicles if follicles is not None else int(afc)
-        _okk_med = max(1, int(res['okk_med']))
-        _mii_med = max(1, int(res['mii_med']))
-        _pn2_med = max(1, int(res['pn2_med']))
-        _okk_rate = min(1.0, _okk_med / max(_foll_count, 1))
-        _fert_rate = min(1.0, _pn2_med / max(_mii_med, 1))
-        _kpi = float(res['kpi_score_median'])
-        _patient_csdi_initial = {
-            "Количество фолликулов": float(_foll_count),
-            "Число ОКК": float(_okk_med),
-            "Число инсеминированных": float(_mii_med),
-            "2 pN": float(_pn2_med),
-            "Частота получения ОКК": _okk_rate,
-            "Частота оплодотворения": _fert_rate,
-            "KPIScore": _kpi,
-        }
-        _csdi_initial_key = (
-            _foll_count, _okk_med, _mii_med, _pn2_med,
-            round(_okk_rate, 4), round(_fert_rate, 4), round(_kpi, 2),
-        )
-        _csdi_run_and_cache(_patient_csdi_initial, _csdi_initial_key)
-    except Exception as _csdi_initial_exc:
-        st.session_state["_csdi_initial_error"] = str(_csdi_initial_exc)
+# ── L5 CSDI — посчитан ядром (медианы сценариев с переносом, KPIScore по
+# формуле обучения, проверка области применимости). None — CSDI не участвует.
+_csdi_applicability = _dt71.get("csdi_applicability") or {}
+st.session_state["csdi_result"] = _dt71["csdi_result"]
 
-# ── L7 BEFE — считаем здесь, чтобы posterior был главной цифрой Результатов ──
-_befe_res, _befe_map = (None, {})
-
-# ── Clinic Adaptation — загрузка JSON (рядом с OOD-статистиками) ──────────
-if "_clinic_adaptation" not in st.session_state:
-    import glob as _glob
-    _adapt_files = sorted(
-        _glob.glob(os.path.join(_BASE_DIR, "models", "clinic_adaptation_*.json"))
-    )
-    if _adapt_files:
-        try:
-            with open(_adapt_files[-1], encoding="utf-8") as _af:
-                st.session_state["_clinic_adaptation"] = json.load(_af)
-        except Exception:
-            st.session_state["_clinic_adaptation"] = None
-    else:
-        st.session_state["_clinic_adaptation"] = None
-
-if _BEFE_OK:
-    # Автозагрузка OOD-статистик (создаются fit_befe_ood.py). Пока файла нет —
-    # детектор просто выключен, без ошибок.
-    if "_befe_ood_stats" not in st.session_state:
-        _ood_npz = os.path.join(_BASE_DIR, "models", "befe_ood_stats.npz")
-        if os.path.exists(_ood_npz):
-            try:
-                _z = np.load(_ood_npz, allow_pickle=True)
-                st.session_state["_befe_ood_stats"] = {
-                    "clinical_mu":      _z["clinical_mu"],
-                    "clinical_cov_inv": _z["clinical_cov_inv"],
-                    "embryo_mu":        _z["embryo_mu"],
-                    "embryo_cov_inv":   _z["embryo_cov_inv"],
-                }
-            except Exception:
-                pass
-    # ── Применяем clinic adaptation (температура + динамический τ) ────────────
-    _adapt       = st.session_state.get("_clinic_adaptation")
-    _tau_kat_dyn = None
-    if _adapt:
-        try:
-            from calibrate_for_clinic import (
-                apply_clinic_calibration, compute_dynamic_tau_kat
-            )
-            _T = _adapt.get("temperature", {})
-            # Температурное масштабирование raw вероятностей
-            if _p_kat_raw is not None and abs(_T.get("T_kat", 1.0) - 1.0) > 0.01:
-                _p_kat_raw = apply_clinic_calibration(_p_kat_raw, "T_kat", _adapt)
-            if _p_gnn_raw is not None and abs(_T.get("T_gat", 1.0) - 1.0) > 0.01:
-                _p_gnn_raw = apply_clinic_calibration(_p_gnn_raw, "T_gat", _adapt)
-            # Динамический τ_KAT через GBDT meta-learner
-            if _adapt.get("gbdt_tau_available"):
-                _gbdt_feats = {
-                    "age":            float(age),
-                    "amh":            float(amh),
-                    "afc":            int(afc),
-                    "bmi":            float(bmi),
-                    "attempt_number": int(attempt),
-                    "okk":            float(res.get("okk_med",    0)),
-                    "mii":            float(res.get("mii_med",    0)),
-                    "pn2":            float(res.get("pn2_med",    0)),
-                    "blasts_total":   float(res.get("blasts_med", 0)),
-                    "blasts_good":    float(res.get("good_med",   0)),
-                }
-                _tau_kat_dyn = compute_dynamic_tau_kat(_gbdt_feats, _adapt)
-        except Exception as _adapt_exc:
-            pass   # адаптация недоступна — работаем без неё
-    st.session_state["_befe_tau_kat_dyn"] = _tau_kat_dyn
-
-    try:
-        _befe_res, _befe_map = build_befe_result(
-            res,
-            p_kat_raw   = _p_kat_raw,
-            ci_kat      = _ci_kat,
-            p_gnn_raw   = _p_gnn_raw,
-            gnn_result  = _gnn_result,
-            w_gnn       = _w_gnn,
-            csdi_result = st.session_state.get("csdi_result"),
-            age=float(age), amh=float(amh), afc=int(afc), bmi=float(bmi),
-            ood_stats        = st.session_state.get("_befe_ood_stats"),
-            tau_kat_override = _tau_kat_dyn,   # clinic-specific dynamic tau
-        )
-    except Exception:
-        _befe_res, _befe_map = None, {}
+# ── L7 BEFE — главная цифра Результатов (compute_l7_posterior ядра) ────────
+# 7.1: исследовательская температурная адаптация (calibrate_for_clinic) больше
+# не входит в клинический расчёт; OOD-статистики загружает befe_batch_utils.
+_befe_res = _dt71["fusion"] if _BEFE_OK else None
+_befe_map = _dt71["fusion_mapping"]
 st.session_state['_pdf_befe'] = _befe_res
+
+# ── Клиническая сводка 7.1: единая главная цифра для экрана, PDF и истории ──
+_clinical_summary   = _dt71["clinical_summary"]
+_clinical_probability = _clinical_summary["probability"]
+_cycle_probability  = _dt71["cycle_probability"]
+_per_transfer_if_transfer = _dt71["per_transfer"]
+# Якорь TRP (кэшируется в _dt71; для закрытого цикла — проспективный пересчёт).
+def _trp_anchor_fn():
+    return _dt_bridge.trp_anchor(_dt71)
 
 # ── Clinical summary: concise clinician-first result page ──────────────────
 if st.session_state.get("_view_mode", "").startswith("Clinical"):
@@ -1593,9 +1321,18 @@ elif _gnn_bundle.get('available'):
 else:
     _gat_display = "н/д"
 
-if _befe_res is not None:
+_cycle_display = (f"{_cycle_probability*100:.1f}%" if _cycle_probability is not None
+                  else f"{res['p_overall_cycle']*100:.1f}%")
+if _clinical_summary["no_transfer_confirmed"]:
+    # Введённые результаты исключают перенос в текущем цикле.
     _main_label = _t("main_outcome")
-    _main_value = f"{_befe_res.posterior*100:.1f}%"
+    _main_value = "0.0%"
+    _main_sub = ("No transfer is possible in the current cycle given the entered results"
+                 if _LANG == "English" else
+                 "По введённым результатам перенос в текущем цикле невозможен")
+elif _befe_res is not None and _clinical_probability is not None:
+    _main_label = _t("main_outcome")
+    _main_value = f"{_clinical_probability*100:.1f}%"
     _display_reliability = _reliability_label(
         _LANG, int(_befe_res.reliability),
         int(_rel_high_threshold), int(_rel_moderate_threshold),
@@ -1619,7 +1356,7 @@ if _UI_OK:
         badge_kind="success" if _befe_res is not None else "warning",
         secondary=[
             ("Если цикл viable", f"{res['p_cum_if_viable']*100:.1f}%", ""),
-            ("Успех цикла", f"{res['p_overall_cycle']*100:.1f}%", "accent"),
+            ("Успех цикла", _cycle_display, "accent"),
             ("KAT ensemble", _kat_display, ""),
             ("GAT ensemble", _gat_display, "highlight"),
         ],
@@ -1629,8 +1366,9 @@ else:
     c1.metric(_main_label, _main_value, help=_main_sub)
     c2.metric("Если цикл viable", f"{res['p_cum_if_viable']*100:.1f}%",
               help="Кумулятивная при ≥1 эмбрионе для переноса")
-    c3.metric("Успех цикла", f"{res['p_overall_cycle']*100:.1f}%",
-              help="От начала стимуляции, включая риск пустого цикла")
+    c3.metric("Успех цикла", _cycle_display,
+              help="От начала стимуляции, включая риск пустого цикла; "
+                   "согласована с итоговой вероятностью L7")
     c4.metric("KAT (ансамбль NN)", _kat_display,
               help="Чистый выход нейросетевого ансамбля KAN+FT-Transformer")
     c5.metric("GAT Ансамбль", _gat_display,
@@ -1638,8 +1376,11 @@ else:
 
 p_cancel = np.mean(res['sim_okk'] == 0)
 if p_cancel > 0.05:
-    st.warning(f"Риск отмены цикла (ZINB нулевые значения): "
+    st.warning(f"Риск отмены цикла (сценарии без ооцитов): "
                f"**{p_cancel*100:.1f}%**")
+if _csdi_applicability.get("reason") not in (None, "in_support"):
+    from presentation import csdi_note as _csdi_note
+    st.caption(_csdi_note(_csdi_applicability, "en" if _LANG == "English" else "ru"))
 
 # ── Вкладки ───────────────────────────────────────────────────
 tab_pipeline, tab_preg, tab_risk, tab_bank, tab_trp, tab_cluster, tab_diff, tab_gat, tab_befe, tab_llm = st.tabs(
@@ -1963,7 +1704,7 @@ with tab_cluster:
 # ── TAB: Риски ────────────────────────────────────────────────
 with tab_risk:
     if _UI_OK:
-        UI.tab_header("", "Риски", "ССЯГ · пустой цикл · ZINB-распределение ооцитов", "L1")
+        UI.tab_header("", "Риски", "ССЯГ · пустой цикл · NB-распределение ооцитов", "L1")
     col_r1, col_r2 = st.columns(2)
 
     with col_r1:
@@ -2017,7 +1758,7 @@ with tab_risk:
         st.session_state["_pdf_fig_risks"] = rfig
 
     with col_r2:
-        (UI.section_header if _UI_OK else lambda _t: st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">{_t}</p>', unsafe_allow_html=True))("Распределение Ооцитов (ZINB)")
+        (UI.section_header if _UI_OK else lambda _t: st.markdown(f'<p style="font-size:15px;font-weight:600;color:#1B4F72;margin:0 0 6px 0">{_t}</p>', unsafe_allow_html=True))("Распределение Ооцитов (NB)")
         okk_arr = res['sim_okk']
         p_zero  = np.mean(okk_arr == 0)
         _pos    = okk_arr[okk_arr > 0]
@@ -2222,17 +1963,16 @@ with tab_bank:
             st.markdown(f"""
             | Параметр | Значение |
             |---|---|
-            | Источник спермы | {sperm_label} |
-            | Коэфф. оплодотворения | {eb['fert_r']*100:.0f}% |
-            | Коэфф. бластуляции D5 | {eb['blast_r']*100:.0f}% |
-            | Частота эуплоидности (возраст {eb['age']:.0f}) | {eb['eupl_r']*100:.0f}% |
-            | P(эуплоид/MII) итог | {eb['p_per_mii']*100:.1f}% |
+            | Источник спермы | {sperm_label} (страта Esteves: `{eb['sperm_source']}`) |
+            | Возраст | {eb['age']:.0f} |
+            | P(эуплоид/MII) | {eb['p_per_mii']*100:.1f}% |
+            | P(беременность) на перенос, использованная для целей | {'—' if eb.get('p_transfer_used') is None else f"{eb['p_transfer_used']*100:.1f}%"} |
 
-            *Esteves et al. 2022; Franasiak et al. 2014; Romanski et al. 2022*
+            *Esteves et al. — логистическая модель эуплоидной бластоцисты на MII (возраст × источник спермы)*
             """)
-        st.caption("p — вероятность на один MII ооцит; объединяет оплодотворение "
-                   "× бластуляцию × эуплоидность. Независимая модель планирования, "
-                   "не заменяет основной pipeline.")
+        st.caption("p — вероятность эуплоидной бластоцисты на один MII ооцит. Число переносов "
+                   "для цели учитывает общий эффект цикла (переносы коррелированы). "
+                   "Независимая модель планирования, не заменяет основной pipeline.")
 
 # ── TAB 7: Лабораторный прогноз (CSDI Hybrid v3 — L5) ─────────
 # ══════════════════════════════════════════════════════════════
@@ -2254,17 +1994,21 @@ with tab_trp:
         )
 
         # ── Входные данные TRP ──────────────────────────────
-        # p_base = p_overall_cycle из основного расчёта Digital Twin.
-        # Это якорь: TRP использует его как абсолютный уровень
-        # для цикла 0; будущие циклы получают относительную коррекцию.
-        _trp_p_base = res.get("p_overall_cycle") if "res" in dir() else None
+        # 7.1: якорь — вероятность цикла по всему стеку L1–L7 (та же, что на
+        # карточке результата). Если перенос в текущем цикле невозможен,
+        # якорь пересчитывается для нового цикла без текущих наблюдений.
         trp_inp = _build_trp_inputs(
             current_age  = float(age),
             current_amh  = float(amh),
             current_afc  = int(afc),
             current_bmi  = float(bmi),
-            p_base       = _trp_p_base,
+            p_base       = None,
         )
+        trp_inp.sperm_source = sperm_source
+        if trp_inp.desired_children != 1:
+            st.warning("TRP 7.1 оценивает время до первой беременности; "
+                       "расчёт выполняется для одного ребёнка.")
+            trp_inp.desired_children = 1
 
         run_trp_btn = st.button(
             "Рассчитать TRP",
@@ -2276,6 +2020,9 @@ with tab_trp:
         if run_trp_btn:
             with st.spinner("MC-симуляция траекторий... (~2 сек)"):
                 try:
+                    _trp_anchor, _trp_anchor_source = _dt_bridge.trp_anchor(_dt71)
+                    trp_inp.p_base_override = _trp_anchor
+                    st.caption(f"Якорь TRP: {_trp_anchor*100:.1f}% ({_trp_anchor_source})")
                     _trp_res = _compute_trp(trp_inp)
                     st.session_state["_trp_result"] = _trp_res
                 except Exception as _trp_exc:
@@ -2329,38 +2076,23 @@ with tab_diff:
         MC-результаты (вкладки 1–6) работают независимо.
         </div>
         """, unsafe_allow_html=True)
+    elif st.session_state.get("csdi_result") is None:
+        # ── CSDI не запускалась или не завершилась для этого случая ──
+        from presentation import csdi_note as _csdi_note
+        st.info(_csdi_note(_csdi_applicability, "en" if _LANG == "English" else "ru"))
     else:
-        # ── Формируем patient dict для CSDI ──────────────────
-        _foll_count = follicles if follicles is not None else int(afc)
-        _okk_med    = max(1, int(res['okk_med']))
-        _mii_med    = max(1, int(res['mii_med']))
-        _pn2_med    = max(1, int(res['pn2_med']))
-        _okk_rate   = min(1.0, _okk_med / max(_foll_count, 1))
-        _fert_rate  = min(1.0, _pn2_med / max(_mii_med, 1))
-        _kpi        = float(res['kpi_score_median'])
-
-        _patient_csdi = {
-            "Количество фолликулов":  float(_foll_count),
-            "Число ОКК":              float(_okk_med),
-            "Число инсеминированных": float(_mii_med),
-            "2 pN":                   float(_pn2_med),
-            "Частота получения ОКК":  _okk_rate,
-            "Частота оплодотворения": _fert_rate,
-            "KPIScore":               _kpi,
-        }
-
-        # Полный ключ по всем 7 кондиционирующим признакам CSDI.
-        # Это гарантирует пересчёт при изменении любого входного параметра.
-        _csdi_key = (
-            _foll_count, _okk_med, _mii_med, _pn2_med,
-            round(_okk_rate, 4), round(_fert_rate, 4), round(_kpi, 2)
-        )
-
-        _csdi_res = _csdi_run_and_cache(_patient_csdi, _csdi_key)
+        # ── Вход CSDI сформирован ядром 7.1 (профиль переноса, KPIScore
+        # по формуле обучения, число фолликулов на пункции) ─────────
+        _csdi_res = st.session_state["csdi_result"]
+        _patient_csdi = _csdi_res.get("conditioning", {})
+        _fert_rate  = float(_patient_csdi.get("Частота оплодотворения", 0.0))
+        if not _csdi_applicability.get("used_in_fusion"):
+            from presentation import csdi_note as _csdi_note
+            st.warning(_csdi_note(_csdi_applicability, "en" if _LANG == "English" else "ru"))
 
         _csdi_df   = _csdi_res['samples']
         _p_csdi    = _csdi_res['P_pregnancy']
-        _p_mc      = res['p_per_transfer']
+        _p_mc      = _dt71["res_transfer"]['p_per_transfer']
         _opt_thr   = csdi_model.best_threshold
         _ci        = _csdi_res['CI_95']
 
@@ -2685,17 +2417,18 @@ with tab_diff:
         # ── Параметры условия ─────────────────────────────────
         with st.expander("Параметры CSDI-условия (conditioning)"):
             st.markdown(f"""
-            CSDI-модель обусловлена на upstream-результатах MC:
+            CSDI-модель обусловлена на upstream-результатах MC
+            (медианы сценариев с переносом):
 
             | Параметр | Значение (из MC) |
             |---|---|
-            | Фолликулов | {_foll_count} |
-            | ОКК (MC медиана) | {_okk_med} |
-            | MII как инсеминированные | {_mii_med} |
-            | 2PN (MC медиана) | {_pn2_med} |
-            | Частота получения ОКК | {_okk_rate:.2f} |
+            | Фолликулов на пункции | {_patient_csdi.get('Количество фолликулов', 0):.0f} |
+            | ОКК (MC медиана) | {_patient_csdi.get('Число ОКК', 0):.0f} |
+            | MII как инсеминированные | {_patient_csdi.get('Число инсеминированных', 0):.0f} |
+            | 2PN (MC медиана) | {_patient_csdi.get('2 pN', 0):.0f} |
+            | Частота получения ОКК | {_patient_csdi.get('Частота получения ОКК', 0):.2f} |
             | Частота оплодотворения | {_fert_rate:.2f} |
-            | KPIScore (MC медиана) | {_kpi:.1f} |
+            | KPIScore (формула обучения) | {_patient_csdi.get('KPIScore', 0):.1f} |
 
             *Генерация: 1000 траекторий, DDIM 50 шагов*
             """)
@@ -2807,7 +2540,7 @@ with tab_gat:
 
 # ── FOOTER ────────────────────────────────────────────────────
 st.markdown("---")
-st.caption("IVF Digital Twin v7.0  ·  from in vitro to in silico  ·  "
+st.caption("IVF Digital Twin v7.1  ·  from in vitro to in silico  ·  "
            "embryossa@gmail.com  ·  "
            "Research prototype — not for standalone clinical use")
 
@@ -2822,22 +2555,22 @@ with tab_befe:
         st.warning(f"BEFE недоступен: {_BEFE_ERR}")
     else:
         try:
-            # Пересчитываем BEFE здесь — к этому моменту csdi_result уже
-            # доступен в session_state если пользователь запускал Diffusion-таб.
-            _befe_res, _befe_map = build_befe_result(
-                res,
-                p_kat_raw   = _p_kat_raw,
-                ci_kat      = _ci_kat,
-                p_gnn_raw   = _p_gnn_raw,
-                gnn_result  = _gnn_result,
-                w_gnn       = _w_gnn,
-                csdi_result = st.session_state.get("csdi_result"),
-                age=float(age), amh=float(amh), afc=int(afc), bmi=float(bmi),
-                ood_stats   = st.session_state.get("_befe_ood_stats"),
-                tau_kat_override = st.session_state.get("_befe_tau_kat_dyn"),
-            )
-            st.session_state['_pdf_befe'] = _befe_res
-            render_befe_tab(_befe_res, _befe_map)
+            # 7.1: тот же результат BEFE, что на карточке и в PDF
+            # (compute_l7_posterior ядра, CSDI с проверкой применимости).
+            if _befe_res is None:
+                st.info("BEFE недоступен для этого расчёта.")
+            else:
+                # Таблица входов показывает пары (значение, источник); служебные
+                # поля 7.1 (csdi_applicability, ood_*) выводятся отдельно.
+                render_befe_tab(_befe_res, {k: v for k, v in _befe_map.items()
+                                            if isinstance(v, tuple) and len(v) == 2})
+                if _befe_map.get("ood_available"):
+                    _ood_unassessed = ", ".join(_befe_map.get("ood_unassessed") or []) or "—"
+                    st.caption(f"OOD: эталон — {_befe_map.get('ood_reference')}; "
+                               f"не оцениваются: {_ood_unassessed}")
+                else:
+                    st.caption("OOD-контроль выключен: нет обучающей статистики "
+                               "(models/befe_ood_stats.npz).")
         except Exception as _befe_exc:
             st.error(f"Ошибка отображения BEFE: {_befe_exc}")
 
@@ -3084,26 +2817,8 @@ with st.expander("Сформировать PDF-отчёт для пациент�
 
         with st.spinner("Формирование PDF (рендеринг графиков)..."):
             try:
-                # Пересчитываем BEFE с актуальным csdi_result на момент генерации PDF
-                if _BEFE_OK:
-                    try:
-                        _befe_pdf, _ = build_befe_result(
-                            res,
-                            p_kat_raw   = _ss.get("_pdf_p_kat_raw"),
-                            ci_kat      = _ss.get("_pdf_ci_kat", (None, None)),
-                            p_gnn_raw   = _ss.get("_pdf_p_gnn_raw"),
-                            gnn_result  = _ss.get("_gnn_result"),
-                            w_gnn       = _ss.get("_pdf_w_gnn", 0.35),
-                            csdi_result = _ss.get("csdi_result"),
-                            age=float(age), amh=float(amh),
-                            afc=int(afc), bmi=float(bmi),
-                            ood_stats   = _ss.get("_befe_ood_stats"),
-                            tau_kat_override = _ss.get("_befe_tau_kat_dyn"),
-                        )
-                    except Exception:
-                        _befe_pdf = _ss.get("_pdf_befe")
-                else:
-                    _befe_pdf = None
+                # 7.1: PDF использует тот же результат BEFE, что и экран.
+                _befe_pdf = _ss.get("_pdf_befe") if _BEFE_OK else None
                 _pdf_bytes = generate_patient_report(
                     patient_name   = pdf_patient_name or "Не указано",
                     patient_id     = pdf_patient_id   or "—",
@@ -3137,6 +2852,9 @@ with st.expander("Сформировать PDF-отчёт для пациент�
                     w_gnn          = _ss.get("_pdf_w_gnn", 0.35),
                     fig_gnn        = _ss.get("_pdf_fig_gnn"),
                     befe_result    = _befe_pdf,
+                    clinical_probability  = _clinical_probability,
+                    cycle_probability     = _cycle_probability,
+                    no_transfer_confirmed = _clinical_summary["no_transfer_confirmed"],
                 )
 
                 _fname = f"IVF_Report_{(pdf_patient_id or 'patient').replace(' ','_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"

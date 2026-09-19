@@ -23,6 +23,8 @@ gnn_predictor.py — GNN inference module for IVF Digital Twin v6.2
     # result['available']     — False если модель не загружена
 """
 
+
+from modelio import model_exists, load_torch, load_joblib
 import os
 import warnings
 import numpy as np
@@ -156,10 +158,8 @@ def load_gnn_model(base_dir: str = None) -> dict:
 
     candidates = [
         os.path.join(base_dir, "models", "gnn_ivf_model.pt"),
-        os.path.join(base_dir, "gnn_ivf_model.pt"),
-        "gnn_ivf_model.pt",
     ]
-    model_path = next((p for p in candidates if os.path.exists(p)), None)
+    model_path = next((p for p in candidates if model_exists(p)), None)
 
     if model_path is None:
         return {'available': False,
@@ -172,7 +172,7 @@ def load_gnn_model(base_dir: str = None) -> dict:
         # сменилось с False на True, и загрузка стала падать ("Weights only load
         # failed") -> load_gnn_bundle() возвращал available=False, а Digital Twin
         # молча писал пустые колонки GNN. Файл модели локальный и доверенный.
-        ckpt = torch.load(model_path, map_location='cpu', weights_only=False)
+        ckpt = load_torch(model_path, map_location='cpu', weights_only=False)
         cfg  = ckpt['cfg']
 
         model = ModelClass(
@@ -213,40 +213,90 @@ def load_gnn_model(base_dir: str = None) -> dict:
 # ПОСТРОЕНИЕ k-NN ГРАФА
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _build_knn_graph_numpy(X_norm: np.ndarray, k: int,
-                            threshold: float, min_edges: int = 2):
-    """CPU k-NN граф без torch_geometric (используется только numpy/sklearn)."""
+def _top_neighbours(similarities,k):
+    """Exact top-k with deterministic index order for ties, without full sort."""
+    rows=len(similarities)
+    indices=np.empty((rows,k),dtype=np.int64)
+    values=np.empty((rows,k),dtype=similarities.dtype)
+    if k==0:return indices,values
+    for i,row in enumerate(similarities):
+        part=np.argpartition(-row,k-1)[:k]
+        cutoff=row[part].min()
+        above=np.flatnonzero(row>cutoff)
+        tied=np.flatnonzero(row==cutoff)[:k-len(above)]
+        chosen=np.concatenate((above,tied))
+        chosen=chosen[np.lexsort((chosen,-row[chosen]))]
+        indices[i]=chosen;values[i]=row[chosen]
+    return indices,values
+
+def _edges_from_neighbours(indices,sims,threshold,min_edges):
+    mask=(sims>=threshold)|(np.arange(indices.shape[1])[None,:]<min_edges)
+    rows=np.broadcast_to(np.arange(len(indices))[:,None],indices.shape)
+    return rows[mask],indices[mask],np.maximum(sims[mask],0.)
+
+def _stable_cosine(left, right=None):
+    """Float64 cosine with a shared 12-decimal tie policy for every batch size.
+
+    Identical profiles must not gain priority from BLAS float32 rounding.
+    The graph weights are converted to float32 only at the torch boundary.
+    """
     from sklearn.metrics.pairwise import cosine_similarity
+    a=np.asarray(left,dtype=np.float64)
+    b=None if right is None else np.asarray(right,dtype=np.float64)
+    return np.round(cosine_similarity(a,b),12)
 
-    n = X_norm.shape[0]
-    k_eff = min(k, n - 1)
 
-    sim_mat = cosine_similarity(X_norm)
-    indices = np.argsort(-sim_mat, axis=1)[:, 1:k_eff + 1]
-    sims    = np.take_along_axis(sim_mat, indices, axis=1)
+def _build_knn_graph_numpy(X_norm: np.ndarray,k:int,threshold:float,min_edges:int=2):
+    sims=_stable_cosine(X_norm)
+    np.fill_diagonal(sims,-np.inf)
+    indices,values=_top_neighbours(sims,min(k,len(X_norm)-1))
+    return _edges_from_neighbours(indices,values,threshold,min_edges)
 
-    src, dst, wgt = [], [], []
-    for i in range(n):
-        added = 0
-        for pos in range(k_eff):
-            j   = int(indices[i, pos])
-            sim = float(sims[i, pos])
-            if sim >= threshold or added < min_edges:
-                src.append(i); dst.append(j)
-                wgt.append(max(sim, 0.0))
-                added += 1
+def _cached_knn_graph_numpy(bundle,X_norm,k,threshold,min_edges):
+    """Exact independent query graph, reusing invariant training neighbours.
 
-    return np.array(src), np.array(dst), np.array(wgt)
+    Each training node needs only its old top-k and the new query as
+    candidates. The query is never linked to other Monte Carlo queries.
+    Training similarities are processed in blocks to bound memory use.
+    """
+    train=X_norm[:-1];n=len(train);k=min(k,n)
+    if n==0:return _build_knn_graph_numpy(X_norm,k,threshold,min_edges)
+    cache=bundle.get('_topology_cache')
+    if cache is None or cache['k']!=k or not np.array_equal(cache['train'],train):
+        base_k=min(k,n-1)
+        ids=np.empty((n,base_k),dtype=np.int64)
+        sims=np.empty((n,base_k),dtype=np.float64)
+        for start in range(0,n,256):
+            end=min(n,start+256)
+            block=_stable_cosine(train[start:end],train)
+            block[np.arange(end-start),np.arange(start,end)]=-np.inf
+            ids[start:end],sims[start:end]=_top_neighbours(block,base_k)
+        cache={'k':k,'train':train.copy(),'ids':ids,'sims':sims}
+        bundle['_topology_cache']=cache
+    query=_stable_cosine(X_norm[-1:],train)[0]
+    candidates=np.column_stack((cache['ids'],np.full(n,n,dtype=np.int64)))
+    values=np.column_stack((cache['sims'],query))
+    # Existing candidates are already ordered by score and node index;
+    # the new node has the largest index, so stable sorting resolves ties.
+    order=np.argsort(-values,axis=1,kind='stable')[:,:k]
+    ids=np.take_along_axis(candidates,order,axis=1)
+    sims=np.take_along_axis(values,order,axis=1)
+    query_ids=np.lexsort((np.arange(n),-query))[:k]
+    ids=np.vstack((ids,query_ids));sims=np.vstack((sims,query[query_ids]))
+    return _edges_from_neighbours(ids,sims,threshold,min_edges)
 
 
 def _build_torch_graph(X_norm: np.ndarray, k: int,
-                        threshold: float, min_edges: int = 2):
+                        threshold: float, min_edges: int = 2, bundle=None):
     """Строит PyG Data-граф из нормированных признаков."""
     torch, nn, F, Data, TransformerConv, to_undirected = _try_import_torch()
     if torch is None:
         return None
 
-    src_np, dst_np, wgt_np = _build_knn_graph_numpy(X_norm, k, threshold, min_edges)
+    if bundle is None:
+        src_np,dst_np,wgt_np=_build_knn_graph_numpy(X_norm,k,threshold,min_edges)
+    else:
+        src_np,dst_np,wgt_np=_cached_knn_graph_numpy(bundle,X_norm,k,threshold,min_edges)
 
     edge_index = torch.tensor(np.array([src_np, dst_np]), dtype=torch.long)
     edge_weight = torch.tensor(wgt_np, dtype=torch.float)
@@ -261,7 +311,9 @@ def _build_torch_graph(X_norm: np.ndarray, k: int,
 
 def predict_gnn(bundle: dict,
                 patient_features: dict,
-                prai_score: float = None) -> dict:
+                prai_score: float = None,
+                include_visuals: bool = True,
+                cache_topology: bool = True) -> dict:
     """
     Предсказывает вероятность беременности для нового пациента.
 
@@ -352,7 +404,7 @@ def predict_gnn(bundle: dict,
         threshold = cfg.get('sim_threshold', 0.60)
         min_edges = cfg.get('min_edges_per_node', 2)
 
-        edge_index, edge_attr = _build_torch_graph(X_norm, k, threshold, min_edges)
+        edge_index, edge_attr = _build_torch_graph(X_norm,k,threshold,min_edges,bundle=bundle if cache_topology else None)
         if edge_index is None:
             raise RuntimeError('Не удалось построить граф')
 
@@ -385,6 +437,8 @@ def predict_gnn(bundle: dict,
 
         # Raw значения соседей (inverse_transform через scaler)
         try:
+            if not include_visuals:
+                raise ValueError('Visualisation not requested')
             _neigh_raw = scaler.inverse_transform(
                 train_X_scaled[_top_idx])                      # [k, d]
             _pat_raw   = scaler.inverse_transform(x_scaled)    # [1, d]
@@ -394,6 +448,8 @@ def predict_gnn(bundle: dict,
 
         # Фоновое облако — PCA-проекция всей тренировочной выборки
         try:
+            if not include_visuals:
+                raise ValueError('Visualisation not requested')
             from sklearn.decomposition import PCA as _PCA
             _pca2       = _PCA(n_components=2, random_state=42)
             _all_coords = _pca2.fit_transform(_train_vecs)   # [N, 2]
@@ -457,21 +513,30 @@ def build_patient_features(age: float,
                             attempt: int,
                             res: dict,
                             known,
-                            p_kat_raw: float = None) -> dict:
+                            p_kat_raw: float = None,
+                            follicles: int = None) -> dict:
     """
     Собирает словарь признаков для GNN из данных app.py.
 
     Args:
         age:       возраст пациентки
-        afc:       АФЧ (sidebar)
+        afc:       АФЧ (sidebar); в обучении столбец 'afc' — число фолликулов
+                   на пункции, поэтому АФЧ сам в признак не подаётся
         attempt:   номер попытки (sidebar)
         res:       словарь результатов pipeline (okk_med, mii_med, ...)
         known:     объект с известными mid-cycle значениями (known.okk, ...)
         p_kat_raw: непрерывный скор KAT (0-1)
+        follicles: введённое число фолликулов на пункции (иначе ОКК/0.846)
+
+    Контракт признаков сверен построчно с protocols_15k (2026-09-11): прогноз
+    на один перенос — transferred=1, frozen=max(Good_Bl-1,0),
+    emb_d5=round((Bl+2PN)/2), good_blast_rate=Good_Bl/2PN, KPIScore по
+    формуле обучения (фолликулы, MII, оплодотворение, хорошие бластоцисты).
 
     Returns:
         dict с ключами из _NODE_FEATURES
     """
+    from embryology import follicle_kpi_score, impute_follicles
     def _known(attr):
         """Достаёт значение из known-объекта (NamedTuple или dict)."""
         if known is None:
@@ -491,25 +556,28 @@ def build_patient_features(age: float,
         return fallback
 
     # ── Абсолютные счётчики ─────────────────────────────────────────────────
-    OCC        = _known('okk')    or _res('okk_med',    0.0)
-    insem      = _known('mii')    or _res('mii_med',    0.0)
-    two_pn     = _known('pn2')    or _res('pn2_med',    0.0)
-    Bl         = _known('blasts') or _res('blasts_med', 0.0)
-    Good_Bl    = _known('good')   or _res('good_med',   0.0)
-    emb_d5     = Bl               # бластоцисты на 5-й день ≈ Bl
-    cleavage_d3 = two_pn          # прокси: дробящихся ≈ 2PN (нет прямой колонки)
-    transferred = _res('warmed_med', 1.0)
-    frozen      = max(0.0, Bl - transferred)
+    def observed_or_median(attr, key):
+        value = _known(attr)
+        return value if value is not None else _res(key, 0.0)
+    OCC = observed_or_median('okk', 'okk_med')
+    insem = observed_or_median('mii', 'mii_med')
+    two_pn = observed_or_median('pn2', 'pn2_med')
+    Bl = observed_or_median('blasts', 'blasts_med')
+    Good_Bl = observed_or_median('good', 'good_med')
+    emb_d5      = float(np.rint((Bl + two_pn) / 2))  # обучение: MAE 1.35 против 1.78 для Bl
+    cleavage_d3 = two_pn          # прокси: дробящихся ≈ 2PN (совпадает в 85% строк)
+    transferred = 1.0             # прогноз на один перенос (как у KAT)
+    frozen      = max(0.0, Good_Bl - 1.0)
+    foll        = float(follicles) if follicles is not None else float(impute_follicles(OCC))
 
-    # ── Производные частоты ─────────────────────────────────────────────────
+    # ── Производные частоты (определения столбцов обучения) ────────────────
     fert_rate       = two_pn  / max(insem, 1)
     cleav_rate      = cleavage_d3 / max(two_pn, 1)
     blast_rate      = Bl      / max(two_pn, 1)
-    good_blast_rate = Good_Bl / max(Bl, 1)
-    occ_rate        = OCC     / max(afc, 1)
+    good_blast_rate = Good_Bl / max(two_pn, 1)
+    occ_rate        = OCC     / max(foll, 1)
 
-    # ── KPIScore — берём из res если есть, иначе NaN ─────────────────────────
-    KPIScore = _res('kpi_score', None) or _res('kpi', None)
+    KPIScore = float(follicle_kpi_score(age, foll, insem, fert_rate if insem > 0 else 0.0, Good_Bl))
 
     # ── KAT признаки ─────────────────────────────────────────────────────────
     PRAI      = float(p_kat_raw) if p_kat_raw is not None else None
@@ -518,7 +586,7 @@ def build_patient_features(age: float,
     return {
         'Age':             float(age),
         'attempt':         float(attempt),
-        'afc':             float(afc),
+        'afc':             foll,
         'OCC':             float(OCC),
         'insem':           float(insem),
         'two_pn':          float(two_pn),

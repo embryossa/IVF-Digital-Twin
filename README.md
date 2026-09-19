@@ -2,7 +2,7 @@
 
 <img src="logo22.png" width="96" alt="IVF Digital Twin">
 
-# IVF Digital Twin v7.0
+# IVF Digital Twin v7.1
 
 **An Integrated Multi-Source Ensemble Platform for Stage-Stratified IVF Outcome Prediction**
 
@@ -25,6 +25,12 @@
 > clinical judgment, and a qualified clinician must review every prediction
 > before it informs a decision or reaches a patient. Read
 > [DISCLAIMER.md](DISCLAIMER.md) before any clinical use.
+
+> [!NOTE]
+> **Version 7.1 computation logic.** The model layers were refitted and the
+> data flow was unified with the 7.1 clinic build; the Streamlit interface is
+> unchanged. Method descriptions below still refer to 7.0 where they differ —
+> see [CHANGELOG.md](CHANGELOG.md#710--2026-09-20) for what changed.
 
 ---
 

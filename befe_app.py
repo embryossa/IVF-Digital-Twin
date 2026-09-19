@@ -173,9 +173,12 @@ def _diffusion_context(res: dict, csdi_result, p_mc):
             mc_pn2 = _arr(res.get("sim_pn2"))
             if mc_good is not None and mc_pn2 is not None:
                 mc_tgbdr = np.clip(mc_good / np.maximum(mc_pn2, 1), 0, 1)
-                col = next((c for c in df.columns if "TGBDR" in str(c) or "хор" in str(c).lower()), None)
-                if col is not None:
-                    ks_tgbdr = float(_ks_2samp(mc_tgbdr, _arr(df[col].values)).statistic)
+                # Compare fractions with the same 2PN denominator. The former
+                # substring lookup selected a COUNT column and compared unlike units.
+                if 'Число Bl хор.кач-ва' in df:
+                    denominator = (csdi_result.get('conditioning') or {}).get('2 pN', res.get('pn2_med', 0))
+                    csdi_tgbdr = np.clip(_arr(df['Число Bl хор.кач-ва'].values) / max(float(denominator), 1.0), 0.0, 1.0)
+                    ks_tgbdr = float(_ks_2samp(mc_tgbdr, csdi_tgbdr).statistic)
         except Exception:
             pass
 
@@ -214,7 +217,9 @@ def _cluster_context(res: dict):
     else:
         cluster_prob = 1.0
 
-    # BUG FIX: cluster_analysis does not expose per-cluster centroid distances,
+    # v7.1: pipeline supplies standardized RMS distance to each centroid.
+    # Legacy fallback below is used only when distance metadata is absent.
+    # Previously cluster_analysis did not expose per-cluster centroid distances,
     # so dom_info is always {}.  The old default of 1.0 made closeness = exp(-1)
     # ~0.368 (constant), compressing cluster_certainty into [0.35, 0.63].
     # Default to 0.0 instead -> closeness = exp(0) = 1.0 (patient assumed on
@@ -223,7 +228,7 @@ def _cluster_context(res: dict):
     dist = _f(_first_key(dom_info if isinstance(dom_info, dict) else {},
                          ["distance_to_centroid", "distance", "dist"]), 0.0)
     return ClusterContext(
-        cluster_id=hash(str(dom)) % 100, cluster_label=label,
+        cluster_id=int(dom) if str(dom).isdigit() else -1, cluster_label=label,
         distance_to_centroid=dist, cluster_probability=cluster_prob,
         typical_distance=1.0,
     )
@@ -242,20 +247,113 @@ def _ood_context(res, age, amh, afc, bmi, ood_stats):
     if not ood_stats:
         return OODContext()
     clin_x = [_f(age), _f(amh), _f(afc), _f(bmi)]
-    kpi = _f(res.get("kpi_score")) or _f(res.get("KPIScore")) or 0.0
+    kpi = _f(res.get("kpi_score_median")) or _f(res.get("kpi_score")) or _f(res.get("KPIScore")) or 0.0
     emb_x = [_f(res.get("okk_med")), _f(res.get("mii_med")),
              _f(res.get("pn2_med")), _f(res.get("blasts_med")), kpi]
+    clin_x=[clin_x[i] for i in ood_stats.get('clinical_indices',range(4))]
+    if ood_stats.get('embryo_transform')=='v3':
+        from befe import embryo_features_v3
+        transformed=embryo_features_v3(*emb_x[:4],ood_stats['embryo_shrink_mu'],ood_stats['embryo_shrink_kappa'])
+        emb_x=transformed.tolist() if transformed is not None else [None]
+    else:emb_x=[emb_x[i] for i in ood_stats.get('embryo_indices',range(5))]
     clin = _Subspace()
     emb = _Subspace()
     if ood_stats.get("clinical_mu") is not None and None not in clin_x:
         clin = _Subspace(features=np.array(clin_x),
                          mean=np.asarray(ood_stats["clinical_mu"]),
-                         cov_inv=np.asarray(ood_stats["clinical_cov_inv"]))
+                         cov_inv=np.asarray(ood_stats["clinical_cov_inv"]), threshold=ood_stats.get("clinical_threshold"))
     if ood_stats.get("embryo_mu") is not None and None not in emb_x:
         emb = _Subspace(features=np.array(emb_x),
                         mean=np.asarray(ood_stats["embryo_mu"]),
-                        cov_inv=np.asarray(ood_stats["embryo_cov_inv"]))
+                        cov_inv=np.asarray(ood_stats["embryo_cov_inv"]), threshold=ood_stats.get("embryo_threshold"))
     return OODContext(clinical=clin, embryology=emb)
+
+
+# --------------------------------------------------------------------------- #
+#  Uncertainty range of the final probability (owner decision 2026-09-11)
+# --------------------------------------------------------------------------- #
+
+def _logit_array(p):
+    p = np.clip(np.asarray(p, dtype=float), 1e-6, 1 - 1e-6)
+    return np.log(p / (1 - p))
+
+
+def _uncertainty_range(result, res, p_kat, p_gat, ood):
+    """Replace the precision-pool interval with an information-driven range.
+
+    The pooled interval 1/sqrt(sum tau) is a single number that ignores the
+    cycle still to happen; the raw spread between L1, KAT and GAT, used on its
+    own, is the dispersion of the sources and not the uncertainty of their
+    consensus — it grows whenever a new observation moves one model, so the
+    range widened as data arrived. The range shown has logit variance
+
+      * scenario: BEFE weights applied to the per-scenario L1 and KAT logits
+        over scenarios with a transfer (GAT at the transfer profile) — it
+        vanishes once the embryology is known;
+      * model: the variance of the fused estimate under a random-effects
+        pooling of L1, KAT and GAT (DerSimonian-Laird). Each source enters
+        with the precision the fusion actually gave it — which rises as the
+        cycle is observed (the L1 scenario spread and the KAT bootstrap
+        interval both narrow) and falls outside the training data, because
+        the same OOD deflation is already inside those precisions. Spread
+        between the sources adds the heterogeneity tau_b^2 only where it
+        exceeds what their own precisions explain, so honest disagreement
+        still widens the range without swamping the information gained.
+    """
+    result.pool_ci_low, result.pool_ci_high = result.ci_low, result.ci_high
+    mu = float(_logit_array(result.posterior))
+    w_prior, w_ev = float(result.prior_pull), float(result.evidence_pull)
+    w_kat = w_ev * float(result.evidence_weights.get('KAT', 0.0))
+    w_gat = w_ev * float(result.evidence_weights.get('GAT', 0.0))
+
+    # ---- scenario term: what the unobserved part of the cycle can still do
+    combined = _arr(res.get('sim_p_combined')) if isinstance(res, dict) else None
+    nn = res.get('nn_prediction') if isinstance(res, dict) else None
+    kat_arr = _arr((nn or {}).get('sim_probs')) if p_kat is not None else None
+    v_scen = 0.0
+    if combined is not None and combined.size > 1:
+        fused = w_prior * _logit_array(combined)
+        fused = fused + w_kat * (_logit_array(kat_arr) if kat_arr is not None and kat_arr.shape == combined.shape
+                                 else _logit_array(p_kat if p_kat is not None else result.p_prior))
+        fused = fused + w_gat * _logit_array(p_gat if p_gat is not None else result.p_prior)
+        v_scen = float(np.var(fused))
+
+    # ---- model term: random-effects variance of the fused estimate
+    tau_ev = getattr(result, 'tau_evidence', None) or {}
+    sources = [(_f(getattr(result, 'tau_prior', None)), result.p_prior)]
+    if p_kat is not None: sources.append((_f(tau_ev.get('KAT')), p_kat))
+    if p_gat is not None: sources.append((_f(tau_ev.get('GAT')), p_gat))
+    sources = [(float(t), float(_logit_array(p))) for t, p in sources
+               if t is not None and np.isfinite(t) and t > 1e-3]
+    tau_b2 = 0.0
+    if sources:
+        tau_sum = sum(t for t, _ in sources)
+        tau_sq = sum(t * t for t, _ in sources)
+        k = len(sources)
+        # DerSimonian-Laird: only the spread beyond the sources' own precision
+        # counts as heterogeneity between them.
+        q = sum(t * (x - mu) ** 2 for t, x in sources)
+        denom = tau_sum - tau_sq / tau_sum
+        if k > 1 and denom > 1e-9:
+            tau_b2 = max(0.0, (q - (k - 1)) / denom)
+        v_model = 1.0 / sum(1.0 / (1.0 / t + tau_b2) for t, _ in sources)
+    else:
+        # No usable precision (should not happen): fall back to the pooled interval.
+        v_model = ((_logit_array(result.pool_ci_high) - _logit_array(result.pool_ci_low)) / (2 * 1.96)) ** 2
+
+    sd = float(np.sqrt(v_scen + v_model))
+    from scipy.special import expit
+    result.ci_low = float(expit(mu - 1.96 * sd))
+    result.ci_high = float(expit(mu + 1.96 * sd))
+    result.ci_source = 'scenario-spread+model-uncertainty'
+    result.range_scenario_sd = float(np.sqrt(v_scen))
+    result.range_model_sd = float(np.sqrt(v_model))
+    result.range_hetero_sd = float(np.sqrt(tau_b2))
+    # Reported for the technical record: the OOD factor is already inside the
+    # precisions above, so it widens the range without being applied twice.
+    from befe import _deflate
+    ratio = max(ood.clinical.score()[1], ood.embryology.score()[1]) if ood is not None else 0.0
+    result.range_ood_inflation = float(1.0 / _deflate(ratio))
 
 
 # --------------------------------------------------------------------------- #
@@ -265,7 +363,7 @@ def _ood_context(res, age, amh, afc, bmi, ood_stats):
 def build_befe_result(res, *, p_kat_raw=None, ci_kat=(None, None),
                       p_gnn_raw=None, gnn_result=None, w_gnn=0.35,
                       csdi_result=None, age=None, amh=None, afc=None, bmi=None,
-                      ood_stats=None, tau_kat_override=None):
+                      ood_stats=None, tau_kat_override=None, csdi_applicability=None):
     """Construct BEFE inputs from the app and run the fusion.
 
     Returns (BEFEResult | None, mapping: dict). Returns (None, mapping) if the
@@ -321,46 +419,28 @@ def build_befe_result(res, *, p_kat_raw=None, ci_kat=(None, None),
         MC_variance=0.0,
     )
 
-    diffusion, diff_ok = _diffusion_context(res, csdi_result, p_l1)
+    diffusion, diff_ok = _diffusion_context(res, None if csdi_applicability and csdi_applicability.get('used_in_fusion') is False else csdi_result, p_l1)
     cluster = _cluster_context(res)
     graph, graph_note = _graph_context(gnn_result, w_gnn)
     ood = _ood_context(res, age, amh, afc, bmi, ood_stats)
 
     engine = BEFE(tau_base_evidence=tau_evidence)
     result = engine.predict(experts, uncertainty, diffusion, cluster, graph, ood)
-    # Preserve the model's own uncertainty interval for technical inspection.
-    # The clinic-derived bounds below are a historical limiting corridor, not
-    # the confidence interval of the BEFE point estimate.
-    result.model_ci_low = result.ci_low
-    result.model_ci_high = result.ci_high
+    _uncertainty_range(result, res, p_kat, p_gat, ood)
 
-    # The L7 point estimate is BEFE, but the interval shown to the clinician
-    # should preserve the clinical Beta-Binomial posterior: it is the distribution
-    # that explicitly incorporates "Данные клиники (prior)" from the sidebar.
+    # Keep the separate clinic Beta posterior for the technical report.
+    # It does not replace the scenario/model range around the BEFE estimate.
     beta_post = res.get("posterior", {}) if isinstance(res, dict) else {}
     beta_ci_low = _f(beta_post.get("ci_low")) if isinstance(beta_post, dict) else None
     beta_ci_high = _f(beta_post.get("ci_high")) if isinstance(beta_post, dict) else None
     beta_alpha = beta_post.get("posterior_alpha") if isinstance(beta_post, dict) else None
     beta_beta = beta_post.get("posterior_beta") if isinstance(beta_post, dict) else None
     if beta_ci_low is not None and beta_ci_high is not None and beta_ci_low < beta_ci_high:
-        result.ci_low = beta_ci_low
-        result.ci_high = beta_ci_high
         result.clinic_corridor_low = beta_ci_low
         result.clinic_corridor_high = beta_ci_high
-        result.ci_source = "clinic-historical-corridor"
 
-    # Display classification only. These configurable, deliberately softer
-    # thresholds do not alter the BEFE probability or reliability score.
-    try:
-        import streamlit as _st
-        _high = int(_st.session_state.get("_rel_high_threshold", 60))
-        _moderate = int(_st.session_state.get("_rel_moderate_threshold", 35))
-    except Exception:
-        _high, _moderate = 60, 35
-    result.reliability_band = (
-        "High" if result.reliability >= _high else
-        "Moderate" if result.reliability >= _moderate else "Low"
-    )
+    # Display band: the engine's 70/45 default. The desktop service replaces it
+    # with the clinic's reliability thresholds so every output uses one set.
 
     mapping = {
         "P_L1 (prior)": (p_l1, "res['p_per_transfer'] = MC + FORTUNE/KPI per-transfer"),
@@ -381,6 +461,10 @@ def build_befe_result(res, *, p_kat_raw=None, ci_kat=(None, None),
         "Graph note": (None, graph_note),
         "OOD": (None, "включён" if ood_stats else "выключен (нет train-статистик)"),
     }
+    if csdi_applicability:
+        mapping['csdi_applicability']=csdi_applicability
+        if not diff_ok and csdi_applicability.get('used_in_fusion') is False:
+            mapping['Diffusion (L5)']=(None, 'CSDI исключена из объединения: '+csdi_applicability.get('reason',''))
     return result, mapping
 
 
@@ -452,7 +536,7 @@ def render_befe_tab(result, mapping, *, format_report=None):
               <div style="font-size:46px;font-weight:700;color:#1B4F72;line-height:1.05">
                 {pct(result.posterior)}</div>
               <div style="font-size:14px;color:#5A6B7B">
-                Исторический коридор клиники: {pct(result.ci_low)} – {pct(result.ci_high)}</div>
+                Диапазон неопределённости модели: {pct(result.ci_low)} – {pct(result.ci_high)}</div>
             </div>""",
             unsafe_allow_html=True,
         )

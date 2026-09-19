@@ -117,9 +117,19 @@ def _hero(g: dict, language: str) -> None:
     high = int(g.get("_rel_high_threshold", 60))
     moderate = int(g.get("_rel_moderate_threshold", 35))
     rel = reliability_label(language, score, high, moderate)
-    posterior = getattr(befe, "posterior", None)
+    # 7.1 headline contract (presentation.clinical_summary): per transfer,
+    # or 0 for the current cycle when the entered results exclude a transfer.
+    posterior = g.get("_clinical_probability")
+    if posterior is None:
+        posterior = getattr(befe, "posterior", None)
     if posterior is None:
         posterior = res.get("p_per_transfer")
+    per_transfer = g.get("_per_transfer_if_transfer")
+    if per_transfer is None:
+        per_transfer = res.get("p_per_transfer")
+    whole_cycle = g.get("_cycle_probability")
+    if whole_cycle is None:
+        whole_cycle = res.get("p_overall_cycle")
     lo = getattr(befe, "ci_low", None)
     hi = getattr(befe, "ci_high", None)
 
@@ -132,11 +142,11 @@ def _hero(g: dict, language: str) -> None:
           <div class="clinical-title">{tr(language, 'main_outcome')}</div>
           <div class="clinical-row">
             <div class="clinical-tile"><div class="clinical-label">{tr(language,'per_transfer')}</div>
-              <div class="clinical-number">{_pct(res.get('p_per_transfer'))}</div></div>
+              <div class="clinical-number">{_pct(per_transfer)}</div></div>
             <div class="clinical-tile"><div class="clinical-label">{tr(language,'viable_cycle')}</div>
               <div class="clinical-number">{_pct(res.get('p_cum_if_viable'))}</div></div>
             <div class="clinical-tile"><div class="clinical-label">{tr(language,'whole_cycle')}</div>
-              <div class="clinical-number">{_pct(res.get('p_overall_cycle'))}</div></div>
+              <div class="clinical-number">{_pct(whole_cycle)}</div></div>
           </div>
           <div class="clinical-corridor"><b>{tr(language,'clinical_corridor')}:</b> {corridor}
             &nbsp; · &nbsp; <b>{tr(language,'reliability')}:</b> {rel} ({score}/100)<br>
@@ -306,7 +316,13 @@ def _banking(g: dict, language: str, *, include_trp: bool = True) -> None:
                 "Модуль TRP недоступен.")
         return
 
-    kat_base = g.get("_p_kat_raw")
+    # 7.1: the TRP anchor is the L1-L7 cycle probability of this case
+    # (dt_bridge.trp_anchor), not the raw KAT output.
+    anchor_fn = g.get("_trp_anchor_fn")
+    try:
+        kat_base = anchor_fn()[0] if anchor_fn is not None else None
+    except Exception:
+        kat_base = None
     _metric_cards = st.columns(1)
     _metric_cards[0].markdown(
         f'<div class="risk-card"><div class="value">{_pct(kat_base)}</div>'
@@ -319,7 +335,7 @@ def _banking(g: dict, language: str, *, include_trp: bool = True) -> None:
         c1, c2, c3 = st.columns(3)
         max_cycles = c1.slider(tr(language, "trp_cycles"), 1, 10, 6,
                                key="brief_trp_cycles")
-        desired_children = c2.radio(tr(language, "trp_children"), [1, 2],
+        desired_children = c2.radio(tr(language, "trp_children"), [1],  # TRP 7.1: first pregnancy
                                     horizontal=True, key="brief_trp_children")
         interval_months = c3.slider(tr(language, "trp_interval"), 2, 12, 3,
                                     key="brief_trp_interval")

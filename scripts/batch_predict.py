@@ -30,8 +30,8 @@ import numpy as np
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-exec(open(os.path.join(os.path.dirname(__file__), '..', 'src', 'ivf_digital_twin.py')).read()
-     .replace("if __name__ ==", "if False and __name__ =="))
+import ivf_digital_twin as _pipeline  # noqa: E402
+globals().update({k: getattr(_pipeline, k) for k in dir(_pipeline) if not k.startswith("__")})
 
 
 def predict_row(row, nn_model=None):

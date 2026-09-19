@@ -2,6 +2,64 @@
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [7.1.0] — 2026-09-20
+
+Computation logic of the 7.1 clinic build. The Streamlit interface keeps its
+7.0 layout; it now reads every number from the 7.1 data flow. **Predictions
+change** — see below.
+
+### Changed — model layers
+- **L1 stage 1** refitted: negative binomial with a log link on
+  ln(AMH), ln(AFC) and age (θ = 5.77); the ART-ONE linear predictor
+  under-estimated yield. No separate structural-zero component (not
+  identifiable in the data).
+- **L1 stages 4–5** refitted: zero-inflated beta-binomial blastocyst yield and
+  beta-binomial quality, conditional on the count at the previous stage.
+- Entered laboratory counts now condition the whole chain (forward filtering /
+  backward sampling) instead of overwriting one stage.
+- **Transfer scenario:** without PGT-A every blastocyst is transferable (good
+  quality first, fair quality with a data-derived odds ratio); with PGT-A only
+  euploid embryos. Transfers of one cycle share a random effect (frailty), so
+  cumulative probabilities no longer assume independent transfers.
+- **KAT:** isotonic calibration steps are interpolated (no plateaus or jumps);
+  model inputs follow the training definitions (follicles at puncture,
+  day-5 embryos, frozen embryos).
+- **CSDI (L5):** runs on the transfer profile with the training KPIScore,
+  enters fusion only inside its training domain (fail-closed without
+  `models/csdi_ood_stats.npz`); the fabricated Wilson interval is replaced by
+  Monte Carlo prediction quantiles.
+- **GAT (L6):** feature contract checked against training; exact, cached k-NN
+  graph.
+- **BEFE (L7):** fuses the view restricted to scenarios with a transfer; the
+  range shown is now the model uncertainty (scenario spread + random-effects
+  model term), which narrows as observations arrive — not the clinic
+  historical corridor. OOD statistics schema 2/3 with fitted thresholds;
+  collapsed OOD dimensions are rejected.
+- **TRP:** outcomes integrated out (cycle 1 equals the anchor exactly); the
+  anchor is the L1–L7 cycle probability; time to the first pregnancy only.
+- **Esteves banking** comes from the pipeline's logistic model; transfers for
+  a target account for the shared cycle effect; sperm sources are resolved
+  explicitly.
+- Research temperature / dynamic-τ clinic adaptation no longer enters the
+  clinical calculation.
+
+### Changed — data flow and interface wiring
+- New `dt_bridge.py`: one order of computation for the interface —
+  `ivf_core.predict_single_patient` (L1–L6) → `compute_l7_posterior` (L7) →
+  `presentation.clinical_summary` → cycle probability → TRP anchor. The screen,
+  PDF, BEFE tab and analytics row read the same result.
+- Headline contract (`presentation.py`): per-transfer probability, or 0 for
+  the current cycle when the entered results exclude a transfer.
+- `app.py` and `scripts/batch_predict.py` import the pipeline as a module
+  instead of `exec` into globals (CSDI used to overwrite core names).
+- Labels: the L7 range is shown as "model uncertainty range"; banking and PDF
+  tables follow the 7.1 Esteves output.
+
+### Added
+- `src/embryology.py` (shared L1 parameters and exact conditioning),
+  `src/modelio.py` (one model loader), `src/local_network.py` (Ollama host
+  must be loopback), `tests/test_bridge.py`.
+
 ## [7.0.1] — 2026-07-30
 
 Repository and licensing release. No change to model behaviour or predictions.

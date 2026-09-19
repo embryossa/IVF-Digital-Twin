@@ -128,9 +128,18 @@ class TestPipeline:
         res = run_pipeline(standard_patient, KnownValues(), n=N_SIM)
         assert np.all(res["sim_euploid"] <= res["sim_good"]), "Euploid cannot exceed good"
 
-    def test_warmed_le_euploid(self, standard_patient):
+    def test_warmed_le_blasts_without_pgt(self, standard_patient):
+        # 7.1 transfer scenario: without PGT-A every blastocyst is transferable.
         np.random.seed(42)
         res = run_pipeline(standard_patient, KnownValues(), n=N_SIM)
+        assert res["transfer_scenario"] == "all_blastocysts"
+        assert np.all(res["sim_warmed"] <= res["sim_blasts"]), "Warmed cannot exceed blastocysts"
+
+    def test_warmed_le_euploid_with_pgt(self, standard_patient):
+        # With PGT-A only euploid embryos are transferable.
+        np.random.seed(42)
+        res = run_pipeline(standard_patient, KnownValues(), n=N_SIM, pgt=True)
+        assert res["transfer_scenario"] == "pgt"
         assert np.all(res["sim_warmed"] <= res["sim_euploid"]), "Warmed cannot exceed euploid"
 
     def test_probabilities_in_unit_interval(self, standard_patient):
