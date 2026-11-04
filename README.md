@@ -93,8 +93,28 @@ keeps its 7.0 layout. **Predictions differ from 7.0.** Full list in
 
 ---
 
+## Documentation and live demo
+
+| | Link |
+|---|---|
+| **Interactive demo** of the DT 7.1 clinician interface (runs in the browser, synthetic data only) | <https://embryossa.github.io/IVF-Digital-Twin/> |
+| **Technical documentation v7.1** (FutureHealth Challenge 2026 submission, PDF) | [`docs/technical/IVF_Digital_Twin_v7.1_Technical_Documentation.pdf`](docs/technical/IVF_Digital_Twin_v7.1_Technical_Documentation.pdf) |
+| **Full technical description v7.1** (all seven layers, formulas, validation, MCP, Laya, analytics and EWS; PDF) | [`docs/technical/IVF_Digital_Twin_v7.1_Technical_Description.pdf`](docs/technical/IVF_Digital_Twin_v7.1_Technical_Description.pdf) |
+| MCP connector for AI agents | <https://github.com/embryossa/ivf-digital-twin-mcp> |
+
+The demo is a static site served by GitHub Pages from [`docs/`](docs/index.html). It
+runs a reduced 7.1 model in the browser — L1 cascade, L2 FORTUNE + KPI, the
+closed-form KAN branch of KAT, and BEFE over L1–L3 — on three built-in synthetic
+examples. FT-Transformer, CSDI, GAT, the cluster layer, OOD detection, reliability
+scoring and centre calibration are not part of the demo. It sends no data anywhere
+and shows interaction only, not clinical performance. To run it offline, open
+`docs/index.html` from a local copy of the repository.
+
+---
+
 ## Table of contents
 
+- [Documentation and live demo](#documentation-and-live-demo)
 - [Validation results](#validation-results)
 - [Architecture](#architecture)
 - [Installation](#installation)
@@ -680,7 +700,8 @@ IVF-Digital-Twin/
 │
 ├── models/                    architecture docs + config, no weights
 ├── data/sample/               synthetic reference patients
-├── docs/                      architecture, coefficients, QA protocols
+├── docs/                      architecture, coefficients, QA protocols;
+│                              GitHub Pages demo (index.html) and technical/ PDFs
 ├── narrator_qa/               narrative QA harness (no results)
 ├── tests/                     pytest suite
 └── scripts/                   batch prediction, SPDX, public export
